@@ -11,10 +11,16 @@ services:
     volumes:
       - ./config:/etc/xray
       - ./data:/var/log/xray
-    command: ["run", "-c", "/etc/xray/config.json"]
+      - ./scripts:/scripts:ro
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        chmod +x /scripts/*.sh 2>/dev/null || true
+        /scripts/xray_watch.sh
 
   updater:
-    image: alpine:3.21
+    image: python:3.12-alpine
     container_name: xray-updater
     restart: unless-stopped
     volumes:
@@ -26,6 +32,7 @@ services:
       - -ec
       - |
         apk add --no-cache curl jq >/dev/null
+        chmod +x /scripts/*.sh /scripts/*.py 2>/dev/null || true
         while true; do
           /scripts/update_subscription.sh || true
           sleep "$(( ${SUB_UPDATE_INTERVAL_MIN:-60} * 60 ))"
@@ -33,3 +40,5 @@ services:
     environment:
       XRAY_SUBSCRIPTION_URL: ${XRAY_SUBSCRIPTION_URL}
       SUB_UPDATE_INTERVAL_MIN: ${SUB_UPDATE_INTERVAL_MIN:-60}
+      HTTP_PROXY_PORT: ${HTTP_PROXY_PORT:-3128}
+      SOCKS_PROXY_PORT: ${SOCKS_PROXY_PORT:-1080}
