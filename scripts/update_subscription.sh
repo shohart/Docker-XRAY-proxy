@@ -1,4 +1,11 @@
 #!/bin/sh
+# update_subscription.sh
+# - Downloads XRAY_SUBSCRIPTION_URL payload
+# - If payload is full Xray JSON (has .inbounds and .outbounds) -> normalize inbound ports and replace config.json
+# - Else (HTML / text / base64 subscription) -> extract links via html2xray.py and generate full Xray config.json
+# - Uses atomic replace (mv) and validates JSON with jq before replacing
+# - Logs to stdout + /var/log/xray/updater.log (best-effort)
+
 set -eu
 
 LOG_FILE="/var/log/xray/updater.log"
@@ -7,79 +14,103 @@ DOWNLOAD_FILE="/tmp/subscription.body"
 WORK_CONFIG="/tmp/new-config.json"
 
 log() {
-    msg="$(date '+%Y-%m-%d %H:%M:%S') $1"
-    echo "$msg"
-    mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
-    echo "$msg" >> "$LOG_FILE" 2>/dev/null || true
+  msg="$(date '+%Y-%m-%d %H:%M:%S') $1"
+  echo "$msg"
+  mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+  echo "$msg" >> "$LOG_FILE" 2>/dev/null || true
 }
 
 sha256_file() {
-    [ -f "$1" ] && sha256sum "$1" | awk '{print $1}' || echo ""
+  if [ -f "$1" ]; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    echo ""
+  fi
 }
 
-if [ -z "${XRAY_SUBSCRIPTION_URL:-}" ]; then
-    log "ERROR XRAY_SUBSCRIPTION_URL is not set"
+require_bin() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    log "ERROR Required binary not found: $1"
     exit 1
+  fi
+}
+
+# Ensure required tools exist in container
+require_bin curl
+require_bin jq
+require_bin python3
+
+if [ -z "${XRAY_SUBSCRIPTION_URL:-}" ]; then
+  log "ERROR XRAY_SUBSCRIPTION_URL is not set"
+  exit 1
 fi
 
+# Download
 log "INFO Downloading subscription"
 if ! curl -fsSL --connect-timeout 10 --max-time 60 -o "$DOWNLOAD_FILE" "$XRAY_SUBSCRIPTION_URL"; then
-    log "ERROR Failed to download subscription"
-    exit 1
+  log "ERROR Failed to download subscription"
+  exit 1
 fi
 
 old_sum="$(sha256_file "$TARGET_CONFIG")"
 
-head_bytes="$(head -c 200 "$DOWNLOAD_FILE" | tr '\n' ' ' | tr -d '\r')"
-case "$head_bytes" in
-    *"<html"*|*"<!DOCTYPE html"*|*"User Information"*)
-        log "INFO HTML detected; extracting links and generating Xray config"
-        if python3 /scripts/html2xray.py "$DOWNLOAD_FILE" "$WORK_CONFIG"; then
-            new_sum="$(sha256_file "$WORK_CONFIG")"
-            if [ -n "$new_sum" ] && [ "$new_sum" != "$old_sum" ]; then
-                mv "$WORK_CONFIG" "$TARGET_CONFIG"
-                cp "$DOWNLOAD_FILE" /etc/xray/subscription.html 2>/dev/null || true
-                log "INFO Config updated"
-            else
-                log "INFO Config unchanged"
-                rm -f "$WORK_CONFIG" 2>/dev/null || true
-            fi
-            exit 0
-        else
-            log "ERROR Failed to convert HTML to Xray config"
-            exit 1
-        fi
-    ;;
-esac
+# Decide mode: full JSON vs. "links" (HTML/text/base64/etc.)
+if jq -e '.inbounds and .outbounds' "$DOWNLOAD_FILE" >/dev/null 2>&1; then
+  log "INFO Full Xray JSON detected; normalizing inbound ports"
 
-if ! jq -e '.inbounds and .outbounds' "$DOWNLOAD_FILE" >/dev/null 2>&1; then
-    log "ERROR Not a full Xray JSON config; keep current config"
+  jq \
+    --argjson http_port "${HTTP_PROXY_PORT:-3128}" \
+    --argjson socks_port "${SOCKS_PROXY_PORT:-1080}" \
+    '
+    .inbounds |= map(
+      if .protocol == "http" then .port = $http_port
+      elif .protocol == "socks" then .port = $socks_port
+      else .
+      end
+    )
+    ' "$DOWNLOAD_FILE" > "$WORK_CONFIG"
+
+else
+  log "INFO Not a full Xray JSON; trying to extract links (html/text/base64) and generate Xray config"
+
+  # html2xray.py MUST accept: <input_file> <output_file>
+  # It should:
+  # - extract vless/vmess/trojan/ss/ssr links from HTML/text
+  # - if none found, try base64-decode whole payload and extract again
+  # - write a FULL Xray JSON config with inbounds/outbounds to output_file
+  if ! python3 /scripts/html2xray.py "$DOWNLOAD_FILE" "$WORK_CONFIG"; then
+    log "ERROR Cannot parse subscription as full JSON nor as links; keep current config"
     exit 1
+  fi
 fi
 
-jq \
---argjson http_port "${HTTP_PROXY_PORT:-3128}" \
---argjson socks_port "${SOCKS_PROXY_PORT:-1080}" \
-'
-  .inbounds |= map(
-    if .protocol == "http" then .port = $http_port
-    elif .protocol == "socks" then .port = $socks_port
-    else .
-    end
-  )
-' "$DOWNLOAD_FILE" > "$WORK_CONFIG"
-
+# Validate generated JSON before replacing config
 if ! jq -e '.inbounds and .outbounds' "$WORK_CONFIG" >/dev/null 2>&1; then
-    log "ERROR Generated config failed validation"
-    exit 1
+  log "ERROR Generated config is not a valid full Xray config (missing inbounds/outbounds); keep current config"
+  # Show last bytes for debugging (best-effort, no secrets beyond structure)
+  tail -c 200 "$WORK_CONFIG" | tr '\n' ' ' | tr -d '\r' | sed 's/[^[:print:]]/?/g' 1>&2 || true
+  exit 1
+fi
+
+# Also ensure it's valid JSON at all
+if ! jq -e '.' "$WORK_CONFIG" >/dev/null 2>&1; then
+  log "ERROR Generated config is not valid JSON; keep current config"
+  tail -c 200 "$WORK_CONFIG" | tr '\n' ' ' | tr -d '\r' | sed 's/[^[:print:]]/?/g' 1>&2 || true
+  exit 1
 fi
 
 new_sum="$(sha256_file "$WORK_CONFIG")"
 if [ -n "$new_sum" ] && [ "$new_sum" != "$old_sum" ]; then
-    mv "$WORK_CONFIG" "$TARGET_CONFIG"
-    cp "$DOWNLOAD_FILE" /etc/xray/subscription.json 2>/dev/null || true
-    log "INFO Config updated"
+  # Atomic replace
+  mv -f "$WORK_CONFIG" "$TARGET_CONFIG"
+  log "INFO Config updated (checksum changed)"
 else
-    log "INFO Config unchanged"
-    rm -f "$WORK_CONFIG" 2>/dev/null || true
+  rm -f "$WORK_CONFIG" 2>/dev/null || true
+  log "INFO Config unchanged; no replace"
 fi
+
+# Keep a copy of raw payload for troubleshooting
+# (best-effort, may fail if /etc/xray is RO in some setups)
+cp "$DOWNLOAD_FILE" /etc/xray/subscription.raw 2>/dev/null || true
+
+log "INFO Done"

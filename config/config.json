@@ -11,7 +11,10 @@
       },
       "sniffing": {
         "enabled": true,
-        "destOverride": ["http", "tls"]
+        "destOverride": [
+          "http",
+          "tls"
+        ]
       }
     },
     {
@@ -23,15 +26,72 @@
       },
       "sniffing": {
         "enabled": true,
-        "destOverride": ["http", "tls"]
+        "destOverride": [
+          "http",
+          "tls"
+        ]
       }
     }
   ],
   "outbounds": [
     {
-      "tag": "proxy",
-      "protocol": "freedom",
-      "settings": {}
+      "tag": "node1",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "45.153.71.101",
+            "port": 7443,
+            "users": [
+              {
+                "id": "2f39e6a0-03ae-4e0d-b57e-3e6a6838ba7d",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/api",
+          "headers": {
+            "Host": "easydash26.argonaft1.online"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "easydash26.argonaft1.online"
+        }
+      }
+    },
+    {
+      "tag": "node2",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "45.153.71.101",
+            "port": 8443,
+            "users": [
+              {
+                "id": "2f39e6a0-03ae-4e0d-b57e-3e6a6838ba7d",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "easyweather26.argonaft1.online",
+          "fingerprint": "ios",
+          "publicKey": "ax-a8Cqj03X85P8UU0UiVUI_HnHOPuOv_tvqp5DepBI",
+          "shortId": "a3fe6b9fee5e2db4"
+        }
+      }
     },
     {
       "tag": "direct",
@@ -49,7 +109,11 @@
     "rules": [
       {
         "type": "field",
-        "ip": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+        "ip": [
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16"
+        ],
         "outboundTag": "direct"
       }
     ]

@@ -1,0 +1,16 @@
+[2026-02-22 15:57:26] INFO Downloading subscription from https://easydash26.argonaft1.online/sub/NTE4MzE0MDU4NiwxNzcwOTA5OTgwEyIsDB8PPP
+[2026-02-22 15:57:26] ERROR Subscription is not a full Xray JSON config (missing inbounds/outbounds); keep current config
+2026-02-22 16:59:34 ERROR XRAY_SUBSCRIPTION_URL is not set
+2026-02-22 17:04:23 ERROR XRAY_SUBSCRIPTION_URL is not set
+2026-02-22 17:08:20 INFO Downloading subscription
+2026-02-22 17:08:21 ERROR Not a full Xray JSON config; keep current config
+2026-02-22 17:08:36 INFO Downloading subscription
+2026-02-22 17:08:36 ERROR Not a full Xray JSON config; keep current config
+2026-02-22 17:14:08 INFO Downloading subscription
+2026-02-22 17:14:08 ERROR Not a full Xray JSON config; keep current config
+2026-02-22 17:21:47 INFO Downloading subscription
+2026-02-22 17:21:48 INFO Not a full Xray JSON; trying to extract links (html/text/base64) and generate Xray config
+2026-02-22 17:27:30 INFO Downloading subscription
+2026-02-22 17:27:30 INFO Not a full Xray JSON; trying to extract links (html/text/base64) and generate Xray config
+2026-02-22 17:27:31 INFO Config updated (checksum changed)
+2026-02-22 17:27:31 INFO Done

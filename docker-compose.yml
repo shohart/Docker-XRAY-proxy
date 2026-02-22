@@ -30,3 +30,5 @@ services:
           /bin/sh /scripts/update_subscription.sh || true
           sleep "$(( ${SUB_UPDATE_INTERVAL_MIN:-60} * 60 ))"
         done
+    env_file:
+      - .env
