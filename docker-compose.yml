@@ -26,13 +26,7 @@ services:
       - -ec
       - |
         apk add --no-cache curl jq >/dev/null
-        chmod +x /scripts/*.sh /scripts/*.py 2>/dev/null || true
         while true; do
-          /scripts/update_subscription.sh || true
+          /bin/sh /scripts/update_subscription.sh || true
           sleep "$(( ${SUB_UPDATE_INTERVAL_MIN:-60} * 60 ))"
         done
-    environment:
-      XRAY_SUBSCRIPTION_URL: ${XRAY_SUBSCRIPTION_URL}
-      SUB_UPDATE_INTERVAL_MIN: ${SUB_UPDATE_INTERVAL_MIN:-60}
-      HTTP_PROXY_PORT: ${HTTP_PROXY_PORT:-3128}
-      SOCKS_PROXY_PORT: ${SOCKS_PROXY_PORT:-1080}

@@ -34,7 +34,7 @@ head_bytes="$(head -c 200 "$DOWNLOAD_FILE" | tr '\n' ' ' | tr -d '\r')"
 case "$head_bytes" in
     *"<html"*|*"<!DOCTYPE html"*|*"User Information"*)
         log "INFO HTML detected; extracting links and generating Xray config"
-        if /scripts/html2xray.py "$DOWNLOAD_FILE" "$WORK_CONFIG"; then
+        if python3 /scripts/html2xray.py "$DOWNLOAD_FILE" "$WORK_CONFIG"; then
             new_sum="$(sha256_file "$WORK_CONFIG")"
             if [ -n "$new_sum" ] && [ "$new_sum" != "$old_sum" ]; then
                 mv "$WORK_CONFIG" "$TARGET_CONFIG"
