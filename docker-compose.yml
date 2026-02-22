@@ -13,7 +13,7 @@ services:
     volumes:
       - ./config:/etc/xray
       - ./data:/var/log/xray
-    command: /usr/bin/xray run -c /etc/xray/config.json
+    command: /usr/bin/xray-core run -c /etc/xray/config.json
 
   updater:
     image: ghcr.io/xtls/xray-core:latest
