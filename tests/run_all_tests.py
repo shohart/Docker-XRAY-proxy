@@ -5,13 +5,14 @@ Run all tests for XRAY-PROXY-Container project
 
 import sys
 import os
+from pathlib import Path
 
 def main():
     """Run all tests using pytest"""
     print("Running all tests for XRAY-PROXY-Container using pytest...\n")
     
-    # Change to the project directory
-    project_dir = 'XRAY-PROXY-Container'
+    # Change to the project directory regardless of launch location
+    project_dir = Path(__file__).resolve().parents[1]
     original_dir = os.getcwd()
     
     try:
@@ -31,10 +32,10 @@ def main():
             print("STDERR:", result.stderr)
             
         if result.returncode == 0:
-            print("\n🎉 All tests PASSED! The project is ready for use.")
+            print("\nAll tests PASSED! The project is ready for use.")
             return 0
         else:
-            print(f"\n💥 Some tests FAILED! Return code: {result.returncode}")
+            print(f"\nSome tests FAILED! Return code: {result.returncode}")
             return 1
             
     except Exception as e:

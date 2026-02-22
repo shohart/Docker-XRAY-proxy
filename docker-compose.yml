@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   xray:
     image: ghcr.io/xtls/xray-core:latest
@@ -13,31 +11,26 @@ services:
     volumes:
       - ./config:/etc/xray
       - ./data:/var/log/xray
-    command: /usr/bin/xray-core run -c /etc/xray/config.json
+    command: ["run", "-c", "/etc/xray/config.json"]
 
   updater:
-    image: ghcr.io/xtls/xray-core:latest
+    image: alpine:3.21
     container_name: xray-updater
     restart: unless-stopped
     volumes:
       - ./config:/etc/xray
       - ./data:/var/log/xray
-    command: |
-      sh -c "
+      - ./scripts:/scripts:ro
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        apk add --no-cache curl jq >/dev/null
+        chmod +x /scripts/update_subscription.sh
         while true; do
-          echo \"[INFO] Updating subscription at $(date)\" >> /var/log/xray/updater.log;
-          curl -s -o /etc/xray/subscription.json \$XRAY_SUBSCRIPTION_URL;
-          if [ $? -eq 0 ]; then
-            echo \"[INFO] Subscription updated successfully\" >> /var/log/xray/updater.log;
-            # Convert subscription to Xray JSON (simplified)
-            cat /etc/xray/subscription.json | jq -r '.clients[] | {id: .id, email: .email, level: .level, alterId: .alterId}' > /etc/xray/config.json;
-            echo \"[INFO] Configuration reloaded\" >> /var/log/xray/updater.log;
-          else
-            echo \"[ERROR] Failed to update subscription\" >> /var/log/xray/updater.log;
-          fi;
-          sleep \$SUB_UPDATE_INTERVAL_MIN * 60;
+          /scripts/update_subscription.sh || true
+          sleep "$(( ${SUB_UPDATE_INTERVAL_MIN:-60} * 60 ))"
         done
-      "
     environment:
-      - XRAY_SUBSCRIPTION_URL
-      - SUB_UPDATE_INTERVAL_MIN
+      XRAY_SUBSCRIPTION_URL: ${XRAY_SUBSCRIPTION_URL}
+      SUB_UPDATE_INTERVAL_MIN: ${SUB_UPDATE_INTERVAL_MIN:-60}

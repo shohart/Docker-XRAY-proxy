@@ -27,7 +27,7 @@ def test_project_structure():
         'tests'
     ]
     
-    base_path = 'XRAY-PROXY-Container'
+    base_path = '.'
     
     # Check directories
     for directory in expected_directories:
@@ -44,7 +44,7 @@ def test_project_structure():
 def test_config_files():
     """Test that configuration files are valid"""
     
-    config_path = 'XRAY-PROXY-Container/config/config.json'
+    config_path = 'config/config.json'
     
     try:
         with open(config_path, 'r') as f:
@@ -63,7 +63,7 @@ def test_config_files():
 def test_env_file():
     """Test that .env file has required variables"""
     
-    env_path = 'XRAY-PROXY-Container/.env'
+    env_path = '.env'
     
     try:
         with open(env_path, 'r') as f:
@@ -91,7 +91,7 @@ def test_env_file():
 def test_script_executable():
     """Test that update script is executable"""
     
-    script_path = 'XRAY-PROXY-Container/scripts/update_subscription.sh'
+    script_path = 'scripts/update_subscription.sh'
     
     try:
         # On Windows, we can't check executable permissions directly,

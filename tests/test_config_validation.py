@@ -28,7 +28,7 @@ def validate_json_file(file_path, expected_keys=None):
 def test_config_structure():
     """Test the structure of config.json"""
     
-    config_path = 'XRAY-PROXY-Container/config/config.json'
+    config_path = 'config/config.json'
     
     # Expected keys for Xray configuration
     expected_keys = ['log', 'inbounds', 'outbounds', 'routing']
@@ -77,7 +77,7 @@ def test_config_structure():
 def test_example_subscription():
     """Test example subscription file"""
     
-    subscription_path = 'XRAY-PROXY-Container/config/example_subscription.json'
+    subscription_path = 'config/example_subscription.json'
     
     expected_keys = ['clients', 'ps', 'v', 'server', 'port']
     

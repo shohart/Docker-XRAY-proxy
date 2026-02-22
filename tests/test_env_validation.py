@@ -9,7 +9,7 @@ import sys
 def test_env_variables():
     """Test that all required environment variables are present in .env file"""
     
-    env_path = 'XRAY-PROXY-Container/.env'
+    env_path = '.env'
     
     try:
         with open(env_path, 'r') as f:
@@ -50,7 +50,7 @@ def test_env_variables():
 def test_env_example():
     """Test that .env.example exists and has the right structure"""
     
-    example_path = 'XRAY-PROXY-Container/.env.example'
+    example_path = '.env.example'
     
     try:
         if not os.path.exists(example_path):

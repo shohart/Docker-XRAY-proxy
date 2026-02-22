@@ -31,22 +31,18 @@
   ],
   "outbounds": [
     {
-      "protocol": "vmess",
-      "settings": {
-        "vnext": [
-          {
-            "address": "127.0.0.1",
-            "port": 10086,
-            "users": []
-          }
-        ]
-      },
-      "streamSettings": {
-        "network": "tcp"
-      }
+      "tag": "proxy",
+      "protocol": "freedom",
+      "settings": {}
     },
     {
+      "tag": "direct",
       "protocol": "freedom",
+      "settings": {}
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole",
       "settings": {}
     }
   ],

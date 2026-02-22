@@ -2,226 +2,144 @@
 
 ## Description
 
-This project deploys a Docker container based on Xray-core
-(https://github.com/XTLS/Xray-core) and turns a Debian server into a
-full-featured VPN gateway for a local network.
+This project runs `xray-core` in Docker and can be used as a LAN proxy gateway.
 
-The container:
+The stack has 2 services:
+- `xray`: main proxy container (HTTP + SOCKS5)
+- `updater`: periodic subscription downloader and config replacer
 
--   Works as an explicit proxy (HTTP + SOCKS5) for LAN devices
--   Can operate as a transparent gateway using TUN
--   Reads Xray subscription URL from `.env`
--   Supports any protocol present in subscription (VLESS, VMess, Trojan,
-    Shadowsocks, etc.)
--   Periodically updates subscription and reloads configuration
--   Designed for Debian + Docker Compose
+## Important Compatibility Notes
 
-## Implementation Status
-
-This project has been implemented with the following structure:
-
--   `docker-compose.yml` - Main Docker Compose configuration
--   `.env` - Environment variables file
--   `config/` - Configuration files directory
--   `data/` - Data and logs directory  
--   `scripts/` - Utility scripts
--   `Dockerfile` - Docker build configuration
+- The updater now accepts only a **full Xray JSON config** from `XRAY_SUBSCRIPTION_URL`.
+- Legacy "subscription converters" and simplified JSON formats are not applied automatically.
+- If the downloaded payload is not a full Xray config (`inbounds` + `outbounds`), updater keeps the current config and writes an error to log.
 
 ## Project Structure
 
-    .
-    ├── docker-compose.yml
-    ├── .env
-    ├── config/
-    │   ├── config.json          # Main Xray configuration
-    │   └── example_subscription.json  # Example subscription format
-    ├── data/
-    │   └── logs/                # Log files directory
-    ├── scripts/
-    │   └── update_subscription.sh  # Subscription update script
-    └── tests/
-        ├── test_docker_build.py     # Docker build test
-        ├── test_structure.py        # Tests project structure and file existence
-        ├── test_config_validation.py # Validates configuration files
-        ├── test_env_validation.py   # Verifies environment variables
-        └── run_all_tests.py         # Script to run all tests
+```text
+.
+├── docker-compose.yml
+├── .env
+├── config/
+│   ├── config.json
+│   └── example_subscription.json
+├── data/
+│   └── logs/
+├── scripts/
+│   └── update_subscription.sh
+├── Dockerfile
+└── tests/
+```
 
-## Configuration
+## Environment Variables
 
-### Environment Variables (.env)
+`.env` example:
 
-Create `.env`:
+```dotenv
+XRAY_SUBSCRIPTION_URL=https://your-provider/config.json
+SUB_UPDATE_INTERVAL_MIN=60
 
-    XRAY_SUBSCRIPTION_URL=https://your-provider/subscription
-    SUB_UPDATE_INTERVAL_MIN=60
+LAN_LISTEN_IP=192.168.1.186
+HTTP_PROXY_PORT=3128
+SOCKS_PROXY_PORT=1080
 
-    LAN_LISTEN_IP=192.168.1.186
-    HTTP_PROXY_PORT=3128
-    SOCKS_PROXY_PORT=1080
-
-    LAN_CIDR=192.168.1.0/24
-    GATEWAY_MODE=1
+LAN_CIDR=192.168.1.0/24
+GATEWAY_MODE=1
+```
 
 Variable description:
-
-XRAY_SUBSCRIPTION_URL -- Xray subscription link\
-SUB_UPDATE_INTERVAL_MIN -- update interval (minutes)\
-LAN_LISTEN_IP -- Debian host LAN IP\
-HTTP_PROXY_PORT -- HTTP proxy port\
-SOCKS_PROXY_PORT -- SOCKS5 proxy port\
-LAN_CIDR -- local network subnet\
-GATEWAY_MODE -- enable transparent gateway (1 = enabled)
-
-## Architecture
-
-Traffic flow:
-
-LAN Device\
-→ Debian Host\
-→ Docker Container (Xray)\
-→ TUN Interface\
-→ VPN Server (from subscription)\
-→ Internet
-
-Two supported modes:
-
-1.  Explicit Proxy (HTTP/SOCKS5)
-2.  Transparent Gateway (TUN routing)
+- `XRAY_SUBSCRIPTION_URL`: URL that returns full Xray JSON config
+- `SUB_UPDATE_INTERVAL_MIN`: update interval in minutes
+- `LAN_LISTEN_IP`: host LAN IP (for client configuration)
+- `HTTP_PROXY_PORT`: HTTP inbound port
+- `SOCKS_PROXY_PORT`: SOCKS inbound port
+- `LAN_CIDR`: local subnet
+- `GATEWAY_MODE`: transparent gateway mode flag
 
 ## Requirements
 
--   Debian 11 or 12
--   Docker Engine
--   Docker Compose v2
--   Kernel TUN support (/dev/net/tun)
+- Debian 11/12 or another Linux host with Docker
+- Docker Engine + Docker Compose v2
+- TUN support (`/dev/net/tun`) for transparent mode
 
 Check TUN:
 
-    ls -l /dev/net/tun
+```bash
+ls -l /dev/net/tun
+```
 
 If missing:
 
-    sudo modprobe tun
+```bash
+sudo modprobe tun
+```
 
 ## Start
 
-    docker compose up -d
+```bash
+docker compose up -d
+```
 
-Check logs:
+Check status and logs:
 
-    docker compose logs -f xray
+```bash
+docker compose ps
+docker compose logs -f xray
+docker compose logs -f updater
+```
 
 Stop:
 
-    docker compose down
+```bash
+docker compose down
+```
 
-## Mode 1: Explicit Proxy
+## Proxy Mode (HTTP/SOCKS)
 
 After startup:
+- HTTP proxy: `LAN_LISTEN_IP:HTTP_PROXY_PORT`
+- SOCKS5 proxy: `LAN_LISTEN_IP:SOCKS_PROXY_PORT`
 
-HTTP proxy: LAN_LISTEN_IP:HTTP_PROXY_PORT\
-SOCKS5 proxy: LAN_LISTEN_IP:SOCKS_PROXY_PORT
+Example test:
 
-Configure proxy manually on client devices.
+```bash
+curl -x http://192.168.1.186:3128 https://ifconfig.me
+```
 
-Test:
+## Transparent Gateway Mode (TUN)
 
-    curl -x http://192.168.1.186:3128 https://ifconfig.me
+Enable IPv4 forwarding:
 
-## Mode 2: Transparent Gateway (TUN)
-
-### Enable forwarding
-
-    sudo sysctl -w net.ipv4.ip_forward=1
+```bash
+sudo sysctl -w net.ipv4.ip_forward=1
+```
 
 Persist:
 
-    echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-xray-gateway.conf
-    sudo sysctl --system
+```bash
+echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-xray-gateway.conf
+sudo sysctl --system
+```
 
-### Set Debian as Gateway
+## Testing
 
--   Configure router DHCP default gateway OR
--   Set manually on devices
+Install test deps:
 
-### Ensure docker-compose includes:
+```bash
+pip install -r requirements-tests.txt
+```
 
-    cap_add:
-      - NET_ADMIN
-    devices:
-      - /dev/net/tun:/dev/net/tun
+Run tests:
 
-After configuration, LAN traffic will pass through Xray tunnel.
+```bash
+python tests/run_all_tests.py
+```
 
-## Subscription Update
+## Security Notes
 
-Subscription updates every SUB_UPDATE_INTERVAL_MIN minutes:
-
-1.  Download subscription
-2.  Convert to Xray JSON
-3.  Reload or restart Xray
-
-Check updater logs:
-
-    docker compose logs -f updater
-
-## Security
-
--   Do NOT expose proxy ports to the internet
--   Restrict access to LAN only
-
-Example iptables:
-
-    sudo iptables -A INPUT -p tcp -s 192.168.1.0/24 --dport 3128 -j ACCEPT
-    sudo iptables -A INPUT -p tcp -s 192.168.1.0/24 --dport 1080 -j ACCEPT
-    sudo iptables -A INPUT -p tcp --dport 3128 -j DROP
-    sudo iptables -A INPUT -p tcp --dport 1080 -j DROP
-
-## Troubleshooting
-
-Check containers:
-
-    docker compose ps
-
-Check logs:
-
-    docker compose logs -f
-
-Check routes:
-
-    ip route
-
-Check interfaces:
-
-    ip addr
+- Do not expose proxy ports to the public internet.
+- Restrict inbound access to trusted LAN ranges.
 
 ## License
 
 Uses Xray-core (XTLS). Licensing follows upstream project.
-
-## Testing
-
-This project includes automated tests to verify proper functionality:
-
-- `tests/test_docker_build.py` - Tests Docker build configuration
-- `tests/test_structure.py` - Tests project structure and file existence
-- `tests/test_config_validation.py` - Validates configuration files
-- `tests/test_env_validation.py` - Verifies environment variables
-- `tests/run_all_tests.py` - Script to run all tests
-
-To run tests:
-```bash
-cd XRAY-PROXY-Container
-python3 tests/run_all_tests.py
-```
-
-## Test Requirements
-
-The test suite requires the following Python packages:
-- `PyYAML>=5.4.1`
-- `pytest>=6.2.4` 
-- `jsonschema>=3.2.0`
-
-Install test dependencies:
-```bash
-pip install -r requirements-tests.txt

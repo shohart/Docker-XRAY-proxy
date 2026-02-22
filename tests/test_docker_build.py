@@ -9,7 +9,7 @@ import subprocess
 
 def test_dockerfile_exists():
     """Test that Dockerfile exists"""
-    dockerfile_path = 'XRAY-PROXY-Container/Dockerfile'
+    dockerfile_path = 'Dockerfile'
     
     assert os.path.exists(dockerfile_path), f"Dockerfile does not exist at {dockerfile_path}"
     
@@ -19,9 +19,9 @@ def test_dockerfile_exists():
             content = f.read()
         
         required_lines = [
-            'FROM ghcr.io/xtls/xray:latest',
+            'FROM ghcr.io/xtls/xray-core:latest',
             'COPY config/',
-            'COPY scripts/',
+            'HEALTHCHECK',
             'EXPOSE 3128 1080'
         ]
         
@@ -35,7 +35,7 @@ def test_dockerfile_exists():
 
 def test_docker_compose_valid():
     """Test that docker-compose.yml is valid and can be parsed"""
-    compose_path = 'XRAY-PROXY-Container/docker-compose.yml'
+    compose_path = 'docker-compose.yml'
     
     assert os.path.exists(compose_path), f"docker-compose.yml does not exist at {compose_path}"
     
@@ -63,7 +63,7 @@ def test_docker_compose_valid():
             with open(compose_path, 'r') as f:
                 content = f.read()
             
-            assert 'version:' in content and 'services:' in content, "docker-compose.yml missing required sections"
+            assert 'services:' in content, "docker-compose.yml missing required 'services' section"
             print("OK: docker-compose.yml appears to be valid")
         except Exception as e:
             raise AssertionError(f"Failed to read docker-compose.yml: {e}")
@@ -77,9 +77,9 @@ def test_docker_build_structure():
         'scripts/update_subscription.sh',
         'Dockerfile'
     ]
-    
-    base_path = 'XRAY-PROXY-Container'
-    
+
+    base_path = '.'
+
     for file_path in required_files:
         full_path = os.path.join(base_path, file_path)
         assert os.path.exists(full_path), f"Required file {full_path} not found for Docker build"
@@ -91,7 +91,7 @@ def test_docker_compose_services():
     try:
         import yaml
         
-        with open('XRAY-PROXY-Container/docker-compose.yml', 'r') as f:
+        with open('docker-compose.yml', 'r') as f:
             compose_data = yaml.safe_load(f)
         
         # Check xray service
