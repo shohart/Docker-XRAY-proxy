@@ -11,13 +11,7 @@ services:
     volumes:
       - ./config:/etc/xray
       - ./data:/var/log/xray
-      - ./scripts:/scripts:ro
-    entrypoint:
-      - /bin/sh
-      - -ec
-      - |
-        chmod +x /scripts/*.sh 2>/dev/null || true
-        /scripts/xray_watch.sh
+    command: ["run", "-c", "/etc/xray/config.json"]
 
   updater:
     image: python:3.12-alpine
