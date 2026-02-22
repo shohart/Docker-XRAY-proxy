@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   xray:
-    image: ghcr.io/xtls/xray:latest
+    image: ghcr.io/xtls/xray-core:latest
     container_name: xray
     restart: unless-stopped
     network_mode: "host"
@@ -16,7 +16,7 @@ services:
     command: /usr/bin/xray run -c /etc/xray/config.json
 
   updater:
-    image: ghcr.io/xtls/xray:latest
+    image: ghcr.io/xtls/xray-core:latest
     container_name: xray-updater
     restart: unless-stopped
     volumes:
