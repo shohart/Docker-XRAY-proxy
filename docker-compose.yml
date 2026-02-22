@@ -12,9 +12,13 @@ services:
     volumes:
       - ./config:/etc/xray
       - ./data:/var/log/xray
-      - ./scripts:/scripts:ro
-    entrypoint: ["/scripts/run_xray.sh"]
-    command: ["run", "-c", "/etc/xray/config.json"]
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mkdir -p /var/log/xray
+        chmod 755 /var/log/xray
+        exec /usr/bin/xray run -c /etc/xray/config.json
 
   updater:
     image: alpine:3.21
