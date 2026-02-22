@@ -1,0 +1,12 @@
+# Requirements for running tests in XRAY-PROXY-Container project
+# These are the Python dependencies needed to execute the test suite
+
+# Core testing dependencies
+PyYAML>=5.4.1
+pytest>=6.2.4
+
+# For JSON validation and configuration testing
+jsonschema>=3.2.0
+
+# For system command execution testing (if needed)
+subprocess32>=3.5.4; python_version<"3.5"

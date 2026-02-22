@@ -25,6 +25,7 @@ This project has been implemented with the following structure:
 -   `config/` - Configuration files directory
 -   `data/` - Data and logs directory  
 -   `scripts/` - Utility scripts
+-   `Dockerfile` - Docker build configuration
 
 ## Project Structure
 
@@ -36,8 +37,14 @@ This project has been implemented with the following structure:
     │   └── example_subscription.json  # Example subscription format
     ├── data/
     │   └── logs/                # Log files directory
-    └── scripts/
-        └── update_subscription.sh  # Subscription update script
+    ├── scripts/
+    │   └── update_subscription.sh  # Subscription update script
+    └── tests/
+        ├── test_docker_build.py     # Docker build test
+        ├── test_structure.py        # Tests project structure and file existence
+        ├── test_config_validation.py # Validates configuration files
+        ├── test_env_validation.py   # Verifies environment variables
+        └── run_all_tests.py         # Script to run all tests
 
 ## Configuration
 
@@ -191,3 +198,30 @@ Check interfaces:
 ## License
 
 Uses Xray-core (XTLS). Licensing follows upstream project.
+
+## Testing
+
+This project includes automated tests to verify proper functionality:
+
+- `tests/test_docker_build.py` - Tests Docker build configuration
+- `tests/test_structure.py` - Tests project structure and file existence
+- `tests/test_config_validation.py` - Validates configuration files
+- `tests/test_env_validation.py` - Verifies environment variables
+- `tests/run_all_tests.py` - Script to run all tests
+
+To run tests:
+```bash
+cd XRAY-PROXY-Container
+python3 tests/run_all_tests.py
+```
+
+## Test Requirements
+
+The test suite requires the following Python packages:
+- `PyYAML>=5.4.1`
+- `pytest>=6.2.4` 
+- `jsonschema>=3.2.0`
+
+Install test dependencies:
+```bash
+pip install -r requirements-tests.txt
