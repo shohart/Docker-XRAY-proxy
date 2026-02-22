@@ -1,0 +1,14 @@
+{
+  "clients": [
+    {
+      "id": "uuid-12345",
+      "email": "user@example.com",
+      "level": 0,
+      "alterId": 64
+    }
+  ],
+  "ps": "Example Subscription",
+  "v": "2",
+  "server": "example-server.com",
+  "port": 443
+}

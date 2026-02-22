@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  xray:
+    image: ghcr.io/xtls/xray:latest
+    container_name: xray
+    restart: unless-stopped
+    network_mode: "host"
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./config:/etc/xray
+      - ./data:/var/log/xray
+    command: /usr/bin/xray run -c /etc/xray/config.json
+
+  updater:
+    image: ghcr.io/xtls/xray:latest
+    container_name: xray-updater
+    restart: unless-stopped
+    volumes:
+      - ./config:/etc/xray
+      - ./data:/var/log/xray
+    command: |
+      sh -c "
+        while true; do
+          echo \"[INFO] Updating subscription at $(date)\" >> /var/log/xray/updater.log;
+          curl -s -o /etc/xray/subscription.json \$XRAY_SUBSCRIPTION_URL;
+          if [ $? -eq 0 ]; then
+            echo \"[INFO] Subscription updated successfully\" >> /var/log/xray/updater.log;
+            # Convert subscription to Xray JSON (simplified)
+            cat /etc/xray/subscription.json | jq -r '.clients[] | {id: .id, email: .email, level: .level, alterId: .alterId}' > /etc/xray/config.json;
+            echo \"[INFO] Configuration reloaded\" >> /var/log/xray/updater.log;
+          else
+            echo \"[ERROR] Failed to update subscription\" >> /var/log/xray/updater.log;
+          fi;
+          sleep \$SUB_UPDATE_INTERVAL_MIN * 60;
+        done
+      "
+    environment:
+      - XRAY_SUBSCRIPTION_URL
+      - SUB_UPDATE_INTERVAL_MIN
