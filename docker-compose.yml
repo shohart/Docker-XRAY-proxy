@@ -3,6 +3,7 @@ services:
     image: ghcr.io/xtls/xray-core:latest
     container_name: xray
     restart: unless-stopped
+    user: root
     network_mode: "host"
     cap_add:
       - NET_ADMIN
@@ -11,6 +12,8 @@ services:
     volumes:
       - ./config:/etc/xray
       - ./data:/var/log/xray
+      - ./scripts:/scripts:ro
+    entrypoint: ["/scripts/run_xray.sh"]
     command: ["run", "-c", "/etc/xray/config.json"]
 
   updater:
