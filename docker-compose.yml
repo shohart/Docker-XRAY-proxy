@@ -26,7 +26,6 @@ services:
       - -ec
       - |
         apk add --no-cache curl jq >/dev/null
-        chmod +x /scripts/update_subscription.sh
         while true; do
           /scripts/update_subscription.sh || true
           sleep "$(( ${SUB_UPDATE_INTERVAL_MIN:-60} * 60 ))"
