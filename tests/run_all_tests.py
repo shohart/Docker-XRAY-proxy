@@ -3,73 +3,45 @@
 Run all tests for XRAY-PROXY-Container project
 """
 
-import subprocess
 import sys
 import os
 
-def run_test_script(script_path):
-    """Run a test script and return the result"""
-    try:
-        # Make script executable (on Unix-like systems)
-        if os.name != 'nt':  # Not Windows
-            os.chmod(script_path, 0o755)
-        
-        result = subprocess.run([sys.executable, script_path], 
-                               capture_output=True, text=True, check=True)
-        print(f"✅ {os.path.basename(script_path)}: PASSED")
-        if result.stdout:
-            print(result.stdout)
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"❌ {os.path.basename(script_path)}: FAILED")
-        print("STDOUT:", e.stdout)
-        print("STDERR:", e.stderr)
-        return False
-    except Exception as e:
-        print(f"❌ {os.path.basename(script_path)}: ERROR - {e}")
-        return False
-
 def main():
-    """Run all tests"""
-    print("Running all tests for XRAY-PROXY-Container...\n")
+    """Run all tests using pytest"""
+    print("Running all tests for XRAY-PROXY-Container using pytest...\n")
     
-    # Get all test scripts in the tests directory
-    tests_dir = 'XRAY-PROXY-Container/tests'
-    test_scripts = []
+    # Change to the project directory
+    project_dir = 'XRAY-PROXY-Container'
+    original_dir = os.getcwd()
     
     try:
-        for filename in os.listdir(tests_dir):
-            if filename.startswith('test_') and filename.endswith('.py'):
-                test_scripts.append(os.path.join(tests_dir, filename))
+        os.chdir(project_dir)
+        
+        # Run pytest with coverage and warnings disabled for cleaner output
+        import subprocess
+        result = subprocess.run([
+            sys.executable, '-m', 'pytest', 
+            'tests/', 
+            '-v',
+            '--tb=short'
+        ], capture_output=True, text=True)
+        
+        print(result.stdout)
+        if result.stderr:
+            print("STDERR:", result.stderr)
+            
+        if result.returncode == 0:
+            print("\n🎉 All tests PASSED! The project is ready for use.")
+            return 0
+        else:
+            print(f"\n💥 Some tests FAILED! Return code: {result.returncode}")
+            return 1
+            
     except Exception as e:
-        print(f"Error finding test scripts: {e}")
+        print(f"Error running tests: {e}")
         return 1
-    
-    if not test_scripts:
-        print("No test scripts found!")
-        return 1
-    
-    # Sort scripts for consistent order
-    test_scripts.sort()
-    
-    results = []
-    for script in test_scripts:
-        print(f"Running {os.path.basename(script)}...")
-        result = run_test_script(script)
-        results.append(result)
-        print()
-    
-    passed = sum(results)
-    total = len(results)
-    
-    print(f"Test Results: {passed}/{total} tests passed")
-    
-    if all(results):
-        print("🎉 All tests PASSED! The project is ready for use.")
-        return 0
-    else:
-        print("💥 Some tests FAILED! Please check the errors above.")
-        return 1
+    finally:
+        os.chdir(original_dir)
 
 if __name__ == '__main__':
     sys.exit(main())

@@ -16,18 +16,14 @@ def validate_json_file(file_path, expected_keys=None):
         if expected_keys:
             missing_keys = [key for key in expected_keys if key not in data]
             if missing_keys:
-                print(f"ERROR: Missing keys in {file_path}: {missing_keys}")
-                return False
+                raise AssertionError(f"Missing keys in {file_path}: {missing_keys}")
         
         print(f"OK: {file_path} is valid JSON")
-        return True
         
     except json.JSONDecodeError as e:
-        print(f"ERROR: Invalid JSON in {file_path}: {e}")
-        return False
+        raise AssertionError(f"Invalid JSON in {file_path}: {e}")
     except Exception as e:
-        print(f"ERROR: Failed to read {file_path}: {e}")
-        return False
+        raise AssertionError(f"Failed to read {file_path}: {e}")
 
 def test_config_structure():
     """Test the structure of config.json"""
@@ -38,8 +34,7 @@ def test_config_structure():
     expected_keys = ['log', 'inbounds', 'outbounds', 'routing']
     
     # Check basic JSON validity and structure
-    if not validate_json_file(config_path, expected_keys):
-        return False
+    validate_json_file(config_path, expected_keys)
     
     # Detailed validation
     try:
@@ -47,14 +42,10 @@ def test_config_structure():
             config_data = json.load(f)
         
         # Validate inbounds structure
-        if 'inbounds' not in config_data:
-            print("ERROR: Missing 'inbounds' section")
-            return False
+        assert 'inbounds' in config_data, "Missing 'inbounds' section"
         
         inbounds = config_data['inbounds']
-        if not isinstance(inbounds, list):
-            print("ERROR: 'inbounds' should be a list")
-            return False
+        assert isinstance(inbounds, list), "'inbounds' should be a list"
         
         # Check for HTTP and SOCKS5 proxies
         http_found = False
@@ -73,21 +64,15 @@ def test_config_structure():
             print("WARNING: SOCKS5 proxy configuration not found")
         
         # Validate outbounds structure
-        if 'outbounds' not in config_data:
-            print("ERROR: Missing 'outbounds' section")
-            return False
+        assert 'outbounds' in config_data, "Missing 'outbounds' section"
         
         outbounds = config_data['outbounds']
-        if not isinstance(outbounds, list):
-            print("ERROR: 'outbounds' should be a list")
-            return False
+        assert isinstance(outbounds, list), "'outbounds' should be a list"
         
         print("OK: Configuration structure is valid")
-        return True
         
     except Exception as e:
-        print(f"ERROR: Failed detailed validation of config.json: {e}")
-        return False
+        raise AssertionError(f"Failed detailed validation of config.json: {e}")
 
 def test_example_subscription():
     """Test example subscription file"""
@@ -96,34 +81,15 @@ def test_example_subscription():
     
     expected_keys = ['clients', 'ps', 'v', 'server', 'port']
     
-    if not validate_json_file(subscription_path, expected_keys):
-        return False
+    validate_json_file(subscription_path, expected_keys)
     
     print("OK: Example subscription file is valid")
-    return True
-
-def main():
-    """Run configuration validation tests"""
-    print("Running XRAY-PROXY-Container configuration validation tests...\n")
-    
-    tests = [
-        test_config_structure,
-        test_example_subscription
-    ]
-    
-    results = []
-    for test in tests:
-        print(f"Running {test.__name__}...")
-        result = test()
-        results.append(result)
-        print()
-    
-    if all(results):
-        print("All configuration tests PASSED! ✅")
-        return 0
-    else:
-        print("Some configuration tests FAILED! ❌")
-        return 1
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        test_config_structure()
+        test_example_subscription()
+        print("All configuration tests PASSED! ✅")
+    except Exception as e:
+        print(f"Configuration test FAILED: {e}")
+        sys.exit(1)

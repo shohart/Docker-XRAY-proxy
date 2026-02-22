@@ -11,9 +11,7 @@ def test_dockerfile_exists():
     """Test that Dockerfile exists"""
     dockerfile_path = 'XRAY-PROXY-Container/Dockerfile'
     
-    if not os.path.exists(dockerfile_path):
-        print(f"ERROR: Dockerfile does not exist at {dockerfile_path}")
-        return False
+    assert os.path.exists(dockerfile_path), f"Dockerfile does not exist at {dockerfile_path}"
     
     # Check that it has required content
     try:
@@ -27,29 +25,19 @@ def test_dockerfile_exists():
             'EXPOSE 3128 1080'
         ]
         
-        missing_lines = []
         for line in required_lines:
-            if line not in content:
-                missing_lines.append(line)
+            assert line in content, f"Required line '{line}' not found in Dockerfile"
         
-        if missing_lines:
-            print(f"WARNING: Missing lines in Dockerfile: {missing_lines}")
-        else:
-            print("OK: Dockerfile exists with required content")
-            
-        return True
+        print("OK: Dockerfile exists with required content")
         
     except Exception as e:
-        print(f"ERROR: Failed to read Dockerfile: {e}")
-        return False
+        raise AssertionError(f"Failed to read Dockerfile: {e}")
 
 def test_docker_compose_valid():
     """Test that docker-compose.yml is valid and can be parsed"""
     compose_path = 'XRAY-PROXY-Container/docker-compose.yml'
     
-    if not os.path.exists(compose_path):
-        print(f"ERROR: docker-compose.yml does not exist at {compose_path}")
-        return False
+    assert os.path.exists(compose_path), f"docker-compose.yml does not exist at {compose_path}"
     
     try:
         # Try to parse the YAML file
@@ -58,25 +46,16 @@ def test_docker_compose_valid():
         with open(compose_path, 'r') as f:
             compose_data = yaml.safe_load(f)
         
-        if not compose_data:
-            print("ERROR: docker-compose.yml is empty or invalid")
-            return False
+        assert compose_data is not None, "docker-compose.yml is empty or invalid"
             
         # Check required services exist
         required_services = ['xray', 'updater']
         services = list(compose_data.get('services', {}).keys())
         
-        missing_services = []
         for service in required_services:
-            if service not in services:
-                missing_services.append(service)
+            assert service in services, f"Required service '{service}' not found in docker-compose.yml"
         
-        if missing_services:
-            print(f"WARNING: Missing services in docker-compose.yml: {missing_services}")
-        else:
-            print("OK: docker-compose.yml is valid and contains required services")
-            
-        return True
+        print("OK: docker-compose.yml is valid and contains required services")
         
     except ImportError:
         # If yaml module not available, do basic check
@@ -84,18 +63,12 @@ def test_docker_compose_valid():
             with open(compose_path, 'r') as f:
                 content = f.read()
             
-            if 'version:' in content and 'services:' in content:
-                print("OK: docker-compose.yml appears to be valid")
-                return True
-            else:
-                print("ERROR: docker-compose.yml missing required sections")
-                return False
+            assert 'version:' in content and 'services:' in content, "docker-compose.yml missing required sections"
+            print("OK: docker-compose.yml appears to be valid")
         except Exception as e:
-            print(f"ERROR: Failed to read docker-compose.yml: {e}")
-            return False
+            raise AssertionError(f"Failed to read docker-compose.yml: {e}")
     except Exception as e:
-        print(f"ERROR: Failed to parse docker-compose.yml: {e}")
-        return False
+        raise AssertionError(f"Failed to parse docker-compose.yml: {e}")
 
 def test_docker_build_structure():
     """Test that all required files are in place for Docker build"""
@@ -107,18 +80,11 @@ def test_docker_build_structure():
     
     base_path = 'XRAY-PROXY-Container'
     
-    missing_files = []
     for file_path in required_files:
         full_path = os.path.join(base_path, file_path)
-        if not os.path.exists(full_path):
-            missing_files.append(file_path)
+        assert os.path.exists(full_path), f"Required file {full_path} not found for Docker build"
     
-    if missing_files:
-        print(f"ERROR: Missing files for Docker build: {missing_files}")
-        return False
-    else:
-        print("OK: All required files for Docker build are present")
-        return True
+    print("OK: All required files for Docker build are present")
 
 def test_docker_compose_services():
     """Test that docker-compose services have correct configuration"""
@@ -130,59 +96,31 @@ def test_docker_compose_services():
         
         # Check xray service
         xray_service = compose_data.get('services', {}).get('xray', {})
-        if not xray_service:
-            print("ERROR: xray service not found in docker-compose.yml")
-            return False
+        assert xray_service, "xray service not found in docker-compose.yml"
         
         # Check required configurations for xray service
         required_xray_configs = ['image', 'network_mode', 'volumes']
-        missing_configs = []
         for config in required_xray_configs:
-            if config not in xray_service:
-                missing_configs.append(config)
+            assert config in xray_service, f"Required configuration '{config}' not found in xray service"
         
-        if missing_configs:
-            print(f"WARNING: Missing xray service configurations: {missing_configs}")
-        else:
-            print("OK: xray service has required configurations")
+        print("OK: xray service has required configurations")
         
         # Check updater service
         updater_service = compose_data.get('services', {}).get('updater', {})
-        if not updater_service:
-            print("ERROR: updater service not found in docker-compose.yml")
-            return False
-            
+        assert updater_service, "updater service not found in docker-compose.yml"
+        
         print("OK: Docker Compose services configuration is valid")
-        return True
         
     except Exception as e:
-        print(f"ERROR: Failed to validate Docker Compose services: {e}")
-        return False
-
-def main():
-    """Run Docker build tests"""
-    print("Running XRAY-PROXY-Container Docker build tests...\n")
-    
-    tests = [
-        test_dockerfile_exists,
-        test_docker_compose_valid,
-        test_docker_build_structure,
-        test_docker_compose_services
-    ]
-    
-    results = []
-    for test in tests:
-        print(f"Running {test.__name__}...")
-        result = test()
-        results.append(result)
-        print()
-    
-    if all(results):
-        print("All Docker build tests PASSED! ✅")
-        return 0
-    else:
-        print("Some Docker build tests FAILED! ❌")
-        return 1
+        raise AssertionError(f"Failed to validate Docker Compose services: {e}")
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        test_dockerfile_exists()
+        test_docker_compose_valid()
+        test_docker_build_structure()
+        test_docker_compose_services()
+        print("All Docker build tests PASSED! ✅")
+    except Exception as e:
+        print(f"Docker build test FAILED: {e}")
+        sys.exit(1)

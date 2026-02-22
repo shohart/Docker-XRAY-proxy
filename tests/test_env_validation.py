@@ -26,18 +26,12 @@ def test_env_variables():
             'GATEWAY_MODE'
         ]
         
-        missing_vars = []
         for var in required_vars:
             # Check if variable is defined (either with or without space after =)
-            if f"{var}=" not in content and f"{var} =" not in content:
-                missing_vars.append(var)
+            assert f"{var}=" in content or f"{var} =" in content, f"Required environment variable {var} not found"
         
-        if missing_vars:
-            print(f"ERROR: Missing environment variables in .env: {missing_vars}")
-            return False
-        else:
-            print("OK: All required environment variables are present")
-            
+        print("OK: All required environment variables are present")
+        
         # Check that some variables have reasonable values
         lines = content.split('\n')
         for line in lines:
@@ -50,11 +44,8 @@ def test_env_variables():
                     elif var_name == 'SUB_UPDATE_INTERVAL_MIN' and var_value == '60':
                         print("INFO: Default update interval found in .env")
         
-        return True
-        
     except Exception as e:
-        print(f"ERROR: Failed to read or validate .env file: {e}")
-        return False
+        raise AssertionError(f"Failed to read or validate .env file: {e}")
 
 def test_env_example():
     """Test that .env.example exists and has the right structure"""
@@ -64,7 +55,7 @@ def test_env_example():
     try:
         if not os.path.exists(example_path):
             print("INFO: .env.example does not exist (this is OK for production)")
-            return True
+            return
         
         with open(example_path, 'r') as f:
             content = f.read()
@@ -80,44 +71,19 @@ def test_env_example():
             'GATEWAY_MODE'
         ]
         
-        missing_vars = []
         for var in required_vars:
-            if f"{var}=" not in content and f"{var} =" not in content:
-                missing_vars.append(var)
+            assert f"{var}=" in content or f"{var} =" in content, f"Required environment variable {var} not found in .env.example"
         
-        if missing_vars:
-            print(f"WARNING: Missing variables in .env.example: {missing_vars}")
-        else:
-            print("OK: .env.example contains all required variables")
-            
-        return True
+        print("OK: .env.example contains all required variables")
         
     except Exception as e:
-        print(f"INFO: Could not check .env.example: {e} (this is OK)")
-        return True
-
-def main():
-    """Run environment validation tests"""
-    print("Running XRAY-PROXY-Container environment validation tests...\n")
-    
-    tests = [
-        test_env_variables,
-        test_env_example
-    ]
-    
-    results = []
-    for test in tests:
-        print(f"Running {test.__name__}...")
-        result = test()
-        results.append(result)
-        print()
-    
-    if all(results):
-        print("All environment tests PASSED! ✅")
-        return 0
-    else:
-        print("Some environment tests FAILED! ❌")
-        return 1
+        raise AssertionError(f"Could not check .env.example: {e}")
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        test_env_variables()
+        test_env_example()
+        print("All environment tests PASSED! ✅")
+    except Exception as e:
+        print(f"Environment test FAILED: {e}")
+        sys.exit(1)
