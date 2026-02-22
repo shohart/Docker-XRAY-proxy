@@ -13,6 +13,7 @@ The stack has 2 services:
 - The updater now accepts only a **full Xray JSON config** from `XRAY_SUBSCRIPTION_URL`.
 - Legacy "subscription converters" and simplified JSON formats are not applied automatically.
 - If the downloaded payload is not a full Xray config (`inbounds` + `outbounds`), updater keeps the current config and writes an error to log.
+- The default config logs to stdout (no file logs). This avoids permission issues on `/var/log/xray` with distroless images.
 
 ## Project Structure
 
