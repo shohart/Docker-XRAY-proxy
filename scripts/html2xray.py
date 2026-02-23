@@ -417,20 +417,20 @@ def main():
 
     # Fallback: some providers return subscription as one base64 blob (list of links)
     if not links:
-      candidate = text.strip()
-    # remove whitespace
-      candidate = re.sub(r"\s+", "", candidate)
-    # try base64 decode whole payload
-      try:
-          decoded = b64d(candidate).decode("utf-8", errors="replace")
-          links = extract_links(decoded)
-          if links:
-            text = decoded
-      except Exception:
-          pass
+        candidate = text.strip()
+        # remove whitespace
+        candidate = re.sub(r"\s+", "", candidate)
+        # try base64 decode whole payload
+        try:
+            decoded = b64d(candidate).decode("utf-8", errors="replace")
+            links = extract_links(decoded)
+            if links:
+                text = decoded
+        except Exception:
+            pass
 
     if not links:
-      raise SystemExit("No vless/vmess/trojan/ss/ssr links found (direct or base64)")
+        raise SystemExit("No vless/vmess/trojan/ss/ssr links found (direct or base64)")
 
     cfg = build_config(links)
     with open(out_file, "w", encoding="utf-8") as f:

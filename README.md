@@ -5,6 +5,7 @@
 This project runs `xray-core` in Docker and can be used as a LAN proxy gateway.
 
 The stack has 2 services:
+
 - `xray`: main proxy container (HTTP + SOCKS5)
 - `updater`: periodic subscription downloader and config replacer
 
@@ -49,6 +50,7 @@ GATEWAY_MODE=1
 ```
 
 Variable description:
+
 - `XRAY_SUBSCRIPTION_URL`: URL that returns full Xray JSON config
 - `SUB_UPDATE_INTERVAL_MIN`: update interval in minutes
 - `LAN_LISTEN_IP`: host LAN IP (for client configuration)
@@ -98,6 +100,7 @@ docker compose down
 ## Proxy Mode (HTTP/SOCKS)
 
 After startup:
+
 - HTTP proxy: `LAN_LISTEN_IP:HTTP_PROXY_PORT`
 - SOCKS5 proxy: `LAN_LISTEN_IP:SOCKS_PROXY_PORT`
 
@@ -120,6 +123,67 @@ Persist:
 ```bash
 echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-xray-gateway.conf
 sudo sysctl --system
+```
+
+## Xray restart after config updates
+
+After xray-updater got new config it should be reloaded by xray service to be used.
+That should be done on the host.
+
+Create a shell script to check if the config changed:
+
+```bash
+sudo tee /usr/local/bin/xray-config-watch.sh >/dev/null <<'EOF'
+#!/bin/sh
+set -eu
+PROJECT_DIR="/home/shohart/repositories/Docker-XRAY-proxy"
+CONFIG_FILE="$PROJECT_DIR/config/config.json"
+STATE_FILE="/var/lib/xray-config-watch/sha256"
+mkdir -p /var/lib/xray-config-watch
+[ -s "$CONFIG_FILE" ] || exit 0
+new="$(sha256sum "$CONFIG_FILE" | awk '{print $1}')"
+old="$(cat "$STATE_FILE" 2>/dev/null || true)"
+if [ "$new" != "$old" ]; then
+  echo "$new" > "$STATE_FILE"
+  cd "$PROJECT_DIR"
+  docker compose restart xray >/dev/null
+fi
+EOF
+sudo chmod +x /usr/local/bin/xray-config-watch.sh
+```
+
+systemd service:
+
+```bash
+sudo tee /etc/systemd/system/xray-config-watch.service >/dev/null <<'EOF'
+[Unit]
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/xray-config-watch.sh
+EOF
+```
+
+... and a timer
+
+```bash
+sudo tee /etc/systemd/system/xray-config-watch.timer >/dev/null <<'EOF'
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=10s
+AccuracySec=1s
+Unit=xray-config-watch.service
+[Install]
+WantedBy=timers.target
+EOF
+```
+
+Then read and enable
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now xray-config-watch.timer
 ```
 
 ## Testing
