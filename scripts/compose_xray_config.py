@@ -135,13 +135,21 @@ def build_inbounds() -> list[dict]:
             "port": http_port,
             "protocol": "http",
             "settings": {"users": []},
-            "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
+            "sniffing": {
+                "enabled": True,
+                "destOverride": ["http", "tls", "quic"],
+                "routeOnly": True,
+            },
         },
         {
             "port": socks_port,
             "protocol": "socks",
             "settings": {"auth": "noauth", "udp": True},
-            "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
+            "sniffing": {
+                "enabled": True,
+                "destOverride": ["http", "tls", "quic"],
+                "routeOnly": True,
+            },
         },
     ]
 
@@ -152,11 +160,15 @@ def build_inbounds() -> list[dict]:
                 "port": tproxy_port,
                 "protocol": "dokodemo-door",
                 "settings": {
-                    "network": "tcp",
+                    "network": "tcp,udp",
                     "followRedirect": True,
                 },
-                "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
-                "streamSettings": {"sockopt": {"tproxy": "redirect"}},
+                "sniffing": {
+                    "enabled": True,
+                    "destOverride": ["http", "tls", "quic"],
+                    "routeOnly": True,
+                },
+                "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
             }
         )
     return inbounds

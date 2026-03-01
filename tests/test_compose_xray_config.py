@@ -68,6 +68,8 @@ def test_gateway_mode_adds_tproxy_and_bypass_rules(monkeypatch):
 
     tproxy = next(i for i in cfg["inbounds"] if i.get("protocol") == "dokodemo-door")
     assert tproxy["port"] == 23456
+    assert tproxy["settings"]["network"] == "tcp,udp"
+    assert tproxy["streamSettings"]["sockopt"]["tproxy"] == "tproxy"
 
     rules = cfg["routing"]["rules"]
     domain_rule = next(r for r in rules if "domain" in r)

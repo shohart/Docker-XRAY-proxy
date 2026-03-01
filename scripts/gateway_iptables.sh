@@ -4,6 +4,8 @@ set -eu
 LAN_CIDR="${LAN_CIDR:-}"
 GATEWAY_MODE="${GATEWAY_MODE:-0}"
 TPROXY_PORT="${GATEWAY_TPROXY_PORT:-12345}"
+BYPASS_MARK="${GATEWAY_FWMARK:-1}"
+BYPASS_TABLE="${GATEWAY_ROUTE_TABLE:-100}"
 BYPASS_IP_CIDRS="${BYPASS_IP_CIDRS:-}"
 BYPASS_IP_MASKS="${BYPASS_IP_MASKS:-}"
 
@@ -82,29 +84,36 @@ fi
 
 BYPASS_CIDRS="$(collect_bypass_cidrs)"
 
-iptables -t nat -N XRAY_GW 2>/dev/null || true
+iptables -t mangle -N XRAY_GW 2>/dev/null || true
 iptables -N XRAY_GW_FWD 2>/dev/null || true
 
-iptables -t nat -F XRAY_GW
+iptables -t mangle -F XRAY_GW
 iptables -F XRAY_GW_FWD
 
-iptables -t nat -C PREROUTING -s "$LAN_CIDR" -p tcp -j XRAY_GW 2>/dev/null || \
-  iptables -t nat -I PREROUTING 1 -s "$LAN_CIDR" -p tcp -j XRAY_GW
+iptables -t mangle -C PREROUTING -s "$LAN_CIDR" -j XRAY_GW 2>/dev/null || \
+  iptables -t mangle -I PREROUTING 1 -s "$LAN_CIDR" -j XRAY_GW
 
 iptables -C FORWARD -s "$LAN_CIDR" -j XRAY_GW_FWD 2>/dev/null || \
   iptables -I FORWARD 1 -s "$LAN_CIDR" -j XRAY_GW_FWD
 
 # Never proxy local networks and loopback/broadcast traffic.
 for ipr in "$LAN_CIDR" 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8 169.254.0.0/16 224.0.0.0/4 255.255.255.255/32; do
-  iptables -t nat -A XRAY_GW -d "$ipr" -j RETURN
+  iptables -t mangle -A XRAY_GW -d "$ipr" -j RETURN
 done
 
 for ipr in $BYPASS_CIDRS; do
-  iptables -t nat -A XRAY_GW -d "$ipr" -j RETURN
+  iptables -t mangle -A XRAY_GW -d "$ipr" -j RETURN
 done
 
-# Transparent redirect of TCP traffic to Xray dokodemo-door inbound.
-iptables -t nat -A XRAY_GW -p tcp -j REDIRECT --to-ports "$TPROXY_PORT"
+# Transparent interception to Xray dokodemo-door inbound (TCP + UDP).
+iptables -t mangle -A XRAY_GW -p tcp -j TPROXY --on-port "$TPROXY_PORT" --tproxy-mark "${BYPASS_MARK}/${BYPASS_MARK}"
+iptables -t mangle -A XRAY_GW -p udp -j TPROXY --on-port "$TPROXY_PORT" --tproxy-mark "${BYPASS_MARK}/${BYPASS_MARK}"
+
+# Route marked packets locally so Xray can accept original destination.
+ip rule del fwmark "$BYPASS_MARK" table "$BYPASS_TABLE" 2>/dev/null || true
+ip rule add fwmark "$BYPASS_MARK" table "$BYPASS_TABLE"
+ip route flush table "$BYPASS_TABLE" 2>/dev/null || true
+ip route add local 0.0.0.0/0 dev lo table "$BYPASS_TABLE"
 
 # Fail-closed for forwarded LAN traffic:
 # allow only LAN destinations or explicit bypass CIDRs, reject the rest.

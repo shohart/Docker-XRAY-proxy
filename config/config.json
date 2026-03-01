@@ -13,8 +13,10 @@
         "enabled": true,
         "destOverride": [
           "http",
-          "tls"
-        ]
+          "tls",
+          "quic"
+        ],
+        "routeOnly": true
       }
     },
     {
@@ -28,8 +30,10 @@
         "enabled": true,
         "destOverride": [
           "http",
-          "tls"
-        ]
+          "tls",
+          "quic"
+        ],
+        "routeOnly": true
       }
     },
     {
@@ -37,19 +41,21 @@
       "port": 12345,
       "protocol": "dokodemo-door",
       "settings": {
-        "network": "tcp",
+        "network": "tcp,udp",
         "followRedirect": true
       },
       "sniffing": {
         "enabled": true,
         "destOverride": [
           "http",
-          "tls"
-        ]
+          "tls",
+          "quic"
+        ],
+        "routeOnly": true
       },
       "streamSettings": {
         "sockopt": {
-          "tproxy": "redirect"
+          "tproxy": "tproxy"
         }
       }
     }

@@ -28,7 +28,7 @@ services:
       - /bin/sh
       - -ec
       - |
-        apk add --no-cache iptables >/dev/null
+        apk add --no-cache iptables iproute2 >/dev/null
         /bin/sh /scripts/gateway_iptables.sh
         tail -f /dev/null
 
