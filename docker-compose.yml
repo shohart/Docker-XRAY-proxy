@@ -1,6 +1,6 @@
 services:
   xray:
-    image: ghcr.io/xtls/xray-core:latest
+    image: ${XRAY_IMAGE:-ghcr.io/xtls/xray-core:26.2.6}
     container_name: xray
     restart: unless-stopped
     network_mode: "host"
@@ -12,6 +12,25 @@ services:
       - ./config:/etc/xray
       - ./data:/var/log/xray
     command: ["run", "-c", "/etc/xray/config.json"]
+
+  gateway:
+    image: alpine:3.20
+    container_name: xray-gateway
+    restart: unless-stopped
+    network_mode: "host"
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ./scripts:/scripts:ro
+    env_file:
+      - .env
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        apk add --no-cache iptables >/dev/null
+        /bin/sh /scripts/gateway_iptables.sh
+        tail -f /dev/null
 
   updater:
     image: python:3.12-alpine
@@ -25,7 +44,8 @@ services:
       - /bin/sh
       - -ec
       - |
-        apk add --no-cache curl jq >/dev/null
+        apk add --no-cache curl jq ca-certificates >/dev/null
+        update-ca-certificates >/dev/null 2>&1 || true
         while true; do
           /bin/sh /scripts/update_subscription.sh || true
           sleep "$(( ${SUB_UPDATE_INTERVAL_MIN:-60} * 60 ))"

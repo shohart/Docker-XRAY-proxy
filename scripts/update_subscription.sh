@@ -1,8 +1,9 @@
 #!/bin/sh
 # update_subscription.sh
 # - Downloads XRAY_SUBSCRIPTION_URL payload
-# - If payload is full Xray JSON (has .inbounds and .outbounds) -> normalize inbound ports and replace config.json
-# - Else (HTML / text / base64 subscription) -> extract links via html2xray.py and generate full Xray config.json
+# - If payload is full Xray JSON (has .inbounds and .outbounds) -> use as source
+# - Else (HTML / text / base64 subscription) -> extract links via html2xray.py and generate source Xray config
+# - Compose final local config via compose_xray_config.py (gateway/routing/bypass policy)
 # - Uses atomic replace (mv) and validates JSON with jq before replacing
 # - Logs to stdout + /var/log/xray/updater.log (best-effort)
 
@@ -12,6 +13,7 @@ LOG_FILE="/var/log/xray/updater.log"
 TARGET_CONFIG="/etc/xray/config.json"
 DOWNLOAD_FILE="/tmp/subscription.body"
 WORK_CONFIG="/tmp/new-config.json"
+FINAL_CONFIG="/tmp/new-config.final.json"
 
 log() {
   msg="$(date '+%Y-%m-%d %H:%M:%S') $1"
@@ -92,19 +94,27 @@ if ! jq -e '.inbounds and .outbounds' "$WORK_CONFIG" >/dev/null 2>&1; then
   exit 1
 fi
 
-# Also ensure it's valid JSON at all
-if ! jq -e '.' "$WORK_CONFIG" >/dev/null 2>&1; then
-  log "ERROR Generated config is not valid JSON; keep current config"
-  tail -c 200 "$WORK_CONFIG" | tr '\n' ' ' | tr -d '\r' | sed 's/[^[:print:]]/?/g' 1>&2 || true
+# Compose final config with local gateway/routing policy
+if ! python3 /scripts/compose_xray_config.py "$WORK_CONFIG" "$FINAL_CONFIG"; then
+  log "ERROR Failed to compose final config; keep current config"
   exit 1
 fi
 
-new_sum="$(sha256_file "$WORK_CONFIG")"
+# Ensure final config is valid
+if ! jq -e '.inbounds and .outbounds and .routing' "$FINAL_CONFIG" >/dev/null 2>&1; then
+  log "ERROR Final config is invalid (missing inbounds/outbounds/routing); keep current config"
+  tail -c 200 "$FINAL_CONFIG" | tr '\n' ' ' | tr -d '\r' | sed 's/[^[:print:]]/?/g' 1>&2 || true
+  exit 1
+fi
+
+new_sum="$(sha256_file "$FINAL_CONFIG")"
 if [ -n "$new_sum" ] && [ "$new_sum" != "$old_sum" ]; then
   # Atomic replace
-  mv -f "$WORK_CONFIG" "$TARGET_CONFIG"
+  mv -f "$FINAL_CONFIG" "$TARGET_CONFIG"
+  rm -f "$WORK_CONFIG" 2>/dev/null || true
   log "INFO Config updated (checksum changed)"
 else
+  rm -f "$FINAL_CONFIG" 2>/dev/null || true
   rm -f "$WORK_CONFIG" 2>/dev/null || true
   log "INFO Config unchanged; no replace"
 fi

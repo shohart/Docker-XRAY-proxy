@@ -19,7 +19,7 @@ def test_dockerfile_exists():
             content = f.read()
         
         required_lines = [
-            'FROM ghcr.io/xtls/xray-core:latest',
+            'FROM ${XRAY_IMAGE}',
             'COPY config/',
             'HEALTHCHECK',
             'EXPOSE 3128 1080'
@@ -89,28 +89,30 @@ def test_docker_build_structure():
 def test_docker_compose_services():
     """Test that docker-compose services have correct configuration"""
     try:
-        import yaml
-        
-        with open('docker-compose.yml', 'r') as f:
+        try:
+            import yaml
+        except ImportError:
+            with open('docker-compose.yml', 'r', encoding='utf-8') as f:
+                content = f.read()
+            for service in ['xray:', 'updater:', 'gateway:']:
+                assert service in content, f"Service marker '{service}' not found"
+            assert 'network_mode: "host"' in content, "Expected host networking marker not found"
+            print("OK: Docker Compose services are present (fallback mode without PyYAML)")
+            return
+
+        with open('docker-compose.yml', 'r', encoding='utf-8') as f:
             compose_data = yaml.safe_load(f)
-        
-        # Check xray service
-        xray_service = compose_data.get('services', {}).get('xray', {})
-        assert xray_service, "xray service not found in docker-compose.yml"
-        
-        # Check required configurations for xray service
+
+        services = compose_data.get('services', {})
+        for service_name in ['xray', 'updater', 'gateway']:
+            assert service_name in services, f"{service_name} service not found in docker-compose.yml"
+
+        xray_service = services['xray']
         required_xray_configs = ['image', 'network_mode', 'volumes']
         for config in required_xray_configs:
             assert config in xray_service, f"Required configuration '{config}' not found in xray service"
-        
-        print("OK: xray service has required configurations")
-        
-        # Check updater service
-        updater_service = compose_data.get('services', {}).get('updater', {})
-        assert updater_service, "updater service not found in docker-compose.yml"
-        
+
         print("OK: Docker Compose services configuration is valid")
-        
     except Exception as e:
         raise AssertionError(f"Failed to validate Docker Compose services: {e}")
 

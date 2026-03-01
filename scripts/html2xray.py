@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import html
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import sys
 import urllib.parse
 
 SUPPORTED_SCHEMES = ("vless://", "vmess://", "trojan://", "ss://", "ssr://")
+TRAILING_JUNK = ")]},.;'\""
 
 
 def b64pad(s: str) -> str:
@@ -25,12 +27,9 @@ def decode_vmess(uri: str) -> dict:
 
 def parse_vless(uri: str) -> dict:
     u = urllib.parse.urlsplit(uri)
-    userinfo, hostport = u.netloc.split("@", 1) if "@" in u.netloc else ("", u.netloc)
-    host, port = (
-        (hostport.rsplit(":", 1) + ["443"])[:2]
-        if ":" in hostport
-        else (hostport, "443")
-    )
+    userinfo = urllib.parse.unquote(u.username or "")
+    host = u.hostname or ""
+    port = u.port or 443
     q = dict(urllib.parse.parse_qsl(u.query, keep_blank_values=True))
     name = urllib.parse.unquote(u.fragment) if u.fragment else ""
     return {"id": userinfo, "host": host, "port": int(port), "q": q, "name": name}
@@ -38,12 +37,9 @@ def parse_vless(uri: str) -> dict:
 
 def parse_trojan(uri: str) -> dict:
     u = urllib.parse.urlsplit(uri)
-    pwd, hostport = u.netloc.split("@", 1) if "@" in u.netloc else ("", u.netloc)
-    host, port = (
-        (hostport.rsplit(":", 1) + ["443"])[:2]
-        if ":" in hostport
-        else (hostport, "443")
-    )
+    pwd = urllib.parse.unquote(u.username or "")
+    host = u.hostname or ""
+    port = u.port or 443
     q = dict(urllib.parse.parse_qsl(u.query, keep_blank_values=True))
     name = urllib.parse.unquote(u.fragment) if u.fragment else ""
     return {"password": pwd, "host": host, "port": int(port), "q": q, "name": name}
@@ -326,16 +322,19 @@ def outbound_from_ssr(node: dict, tag: str) -> dict:
 
 
 def extract_links(text: str) -> list[str]:
+    text = html.unescape(text)
     pattern = r'(?:vless|vmess|trojan|ssr|ss)://[^\s"\'<>]+'
     links = re.findall(pattern, text, flags=re.IGNORECASE)
     seen = set()
     out = []
     for l in links:
-        l = l.strip()
+        l = l.strip().rstrip(TRAILING_JUNK)
         ll = l.lower()
-        if ll.startswith(SUPPORTED_SCHEMES) and l not in seen:
-            seen.add(l)
-            out.append(l)
+        if ll.startswith(SUPPORTED_SCHEMES):
+            key = ll
+            if key not in seen:
+                seen.add(key)
+                out.append(l)
     return out
 
 

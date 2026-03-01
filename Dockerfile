@@ -1,5 +1,6 @@
 # Xray Core Dockerfile for XRAY-PROXY-Container
-FROM ghcr.io/xtls/xray-core:latest
+ARG XRAY_IMAGE=ghcr.io/xtls/xray-core:26.2.6
+FROM ${XRAY_IMAGE}
 
 # Set working directory
 WORKDIR /etc/xray
@@ -12,7 +13,7 @@ EXPOSE 3128 1080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD /usr/bin/xray run -test -c /etc/xray/config.json
+    CMD xray run -test -c /etc/xray/config.json
 
 # Default command
-CMD ["/usr/bin/xray", "run", "-c", "/etc/xray/config.json"]
+CMD ["xray", "run", "-c", "/etc/xray/config.json"]

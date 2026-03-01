@@ -6,31 +6,40 @@ Environment variable validation tests for XRAY-PROXY-Container
 import os
 import sys
 
+def _read_env_content():
+    if os.path.exists('.env'):
+        with open('.env', 'r', encoding='utf-8') as f:
+            return f.read(), '.env'
+    with open('.env.example', 'r', encoding='utf-8') as f:
+        return f.read(), '.env.example'
+
 def test_env_variables():
-    """Test that all required environment variables are present in .env file"""
-    
-    env_path = '.env'
-    
+    """Test that required environment variables are present in .env or .env.example"""
     try:
-        with open(env_path, 'r') as f:
-            content = f.read()
+        content, source = _read_env_content()
         
         # List of required environment variables
         required_vars = [
             'XRAY_SUBSCRIPTION_URL',
+            'XRAY_IMAGE',
             'SUB_UPDATE_INTERVAL_MIN',
             'LAN_LISTEN_IP',
             'HTTP_PROXY_PORT',
             'SOCKS_PROXY_PORT',
             'LAN_CIDR',
-            'GATEWAY_MODE'
+            'GATEWAY_MODE',
+            'GATEWAY_TPROXY_PORT',
+            'BYPASS_DOMAINS',
+            'BYPASS_DOMAIN_ZONES',
+            'BYPASS_IP_CIDRS',
+            'BYPASS_IP_MASKS'
         ]
         
         for var in required_vars:
             # Check if variable is defined (either with or without space after =)
             assert f"{var}=" in content or f"{var} =" in content, f"Required environment variable {var} not found"
         
-        print("OK: All required environment variables are present")
+        print(f"OK: All required environment variables are present in {source}")
         
         # Check that some variables have reasonable values
         lines = content.split('\n')
@@ -40,12 +49,12 @@ def test_env_variables():
                 if len(parts) == 2:
                     var_name, var_value = parts[0].strip(), parts[1].strip()
                     if var_name == 'XRAY_SUBSCRIPTION_URL' and var_value == 'https://your-provider/subscription':
-                        print("WARNING: Default subscription URL found in .env")
+                        print(f"WARNING: Default subscription URL found in {source}")
                     elif var_name == 'SUB_UPDATE_INTERVAL_MIN' and var_value == '60':
-                        print("INFO: Default update interval found in .env")
+                        print(f"INFO: Default update interval found in {source}")
         
     except Exception as e:
-        raise AssertionError(f"Failed to read or validate .env file: {e}")
+        raise AssertionError(f"Failed to read or validate env file: {e}")
 
 def test_env_example():
     """Test that .env.example exists and has the right structure"""
@@ -63,12 +72,18 @@ def test_env_example():
         # Check that it contains the same variables
         required_vars = [
             'XRAY_SUBSCRIPTION_URL',
+            'XRAY_IMAGE',
             'SUB_UPDATE_INTERVAL_MIN',
             'LAN_LISTEN_IP',
             'HTTP_PROXY_PORT',
             'SOCKS_PROXY_PORT',
             'LAN_CIDR',
-            'GATEWAY_MODE'
+            'GATEWAY_MODE',
+            'GATEWAY_TPROXY_PORT',
+            'BYPASS_DOMAINS',
+            'BYPASS_DOMAIN_ZONES',
+            'BYPASS_IP_CIDRS',
+            'BYPASS_IP_MASKS'
         ]
         
         for var in required_vars:

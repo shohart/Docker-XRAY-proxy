@@ -7,22 +7,31 @@ import os
 import sys
 import json
 
+def _read_env_content():
+    if os.path.exists('.env'):
+        with open('.env', 'r', encoding='utf-8') as f:
+            return f.read(), '.env'
+    with open('.env.example', 'r', encoding='utf-8') as f:
+        return f.read(), '.env.example'
+
 def test_project_structure():
     """Test that all required files and directories exist"""
     
     # Define expected files and directories
     expected_files = [
         'docker-compose.yml',
-        '.env',
+        '.env.example',
         'config/config.json',
         'config/example_subscription.json',
         'scripts/update_subscription.sh',
+        'scripts/compose_xray_config.py',
+        'scripts/gateway_iptables.sh',
         'README.md'
     ]
     
     expected_directories = [
         'config',
-        'data/logs',
+        'data',
         'scripts',
         'tests'
     ]
@@ -61,32 +70,34 @@ def test_config_files():
         raise AssertionError(f"Failed to read or parse config.json: {e}")
 
 def test_env_file():
-    """Test that .env file has required variables"""
-    
-    env_path = '.env'
-    
+    """Test that .env or .env.example has required variables"""
     try:
-        with open(env_path, 'r') as f:
-            content = f.read()
+        content, source = _read_env_content()
         
         # Check for required environment variables
         required_vars = [
             'XRAY_SUBSCRIPTION_URL',
+            'XRAY_IMAGE',
             'SUB_UPDATE_INTERVAL_MIN',
             'LAN_LISTEN_IP',
             'HTTP_PROXY_PORT',
             'SOCKS_PROXY_PORT',
             'LAN_CIDR',
-            'GATEWAY_MODE'
+            'GATEWAY_MODE',
+            'GATEWAY_TPROXY_PORT',
+            'BYPASS_DOMAINS',
+            'BYPASS_DOMAIN_ZONES',
+            'BYPASS_IP_CIDRS',
+            'BYPASS_IP_MASKS'
         ]
         
         for var in required_vars:
             assert f"{var}=" in content or f"{var} =" in content, f"Required environment variable {var} not found"
         
-        print("OK: All required environment variables found")
+        print(f"OK: All required environment variables found in {source}")
         
     except Exception as e:
-        raise AssertionError(f"Failed to read .env file: {e}")
+        raise AssertionError(f"Failed to read env file: {e}")
 
 def test_script_executable():
     """Test that update script is executable"""

@@ -1,1 +1,67 @@
 
+# -----------------------------
+# Environment / secrets
+# -----------------------------
+.env
+.env.*
+!.env.example
+
+# -----------------------------
+# Python
+# -----------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+dist/
+build/
+site/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+venv/
+.venv/
+env/
+
+# -----------------------------
+# Logs and runtime artifacts
+# -----------------------------
+*.log
+logs/
+data/*.log
+data/logs/
+*.pid
+*.seed
+*.out
+*.err
+
+# -----------------------------
+# OS / Editor
+# -----------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# -----------------------------
+# Docker / Compose local overrides
+# -----------------------------
+docker-compose.override.yml
+.docker/
+
+# -----------------------------
+# Temporary files
+# -----------------------------
+tmp/
+temp/
+*.tmp
