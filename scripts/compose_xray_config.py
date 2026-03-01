@@ -3,6 +3,7 @@ import ipaddress
 import json
 import os
 import sys
+import urllib.parse
 
 
 LOCAL_IP_RANGES = [
@@ -25,17 +26,35 @@ def parse_csv_env(name: str) -> list[str]:
 
 
 def normalize_domain_exact(value: str) -> str:
-    d = value.strip().lower().rstrip(".")
+    d = extract_hostname(value).lower().rstrip(".")
     if not d:
         return ""
     return f"full:{d}"
 
 
 def normalize_domain_suffix(value: str) -> str:
-    d = value.strip().lower().lstrip(".").rstrip(".")
+    d = extract_hostname(value).lower().lstrip(".").rstrip(".")
     if not d:
         return ""
     return f"domain:{d}"
+
+
+def extract_hostname(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return ""
+    if "://" in raw:
+        parsed = urllib.parse.urlsplit(raw)
+        return parsed.hostname or ""
+    if "/" in raw:
+        raw = raw.split("/", 1)[0]
+    if ":" in raw and raw.count(":") == 1:
+        host, port = raw.rsplit(":", 1)
+        if port.isdigit():
+            raw = host
+    if raw.startswith("*."):
+        raw = raw[2:]
+    return raw
 
 
 def wildcard_to_cidr(value: str) -> str:

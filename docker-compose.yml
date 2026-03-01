@@ -4,8 +4,10 @@ services:
     container_name: xray
     restart: unless-stopped
     network_mode: "host"
+    user: "0:0"
     cap_add:
       - NET_ADMIN
+      - NET_RAW
     devices:
       - /dev/net/tun:/dev/net/tun
     volumes:

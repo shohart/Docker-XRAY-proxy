@@ -136,3 +136,17 @@ def test_routing_rules_have_effective_fields(monkeypatch):
     for rule in cfg["routing"]["rules"]:
         assert rule.get("type") == "field"
         assert any(key in rule for key in effective_keys), f"Rule has no effective fields: {rule}"
+
+
+def test_bypass_domains_accept_url_and_hostport_formats(monkeypatch):
+    mod = _load_compose_module()
+    monkeypatch.setenv("BYPASS_DOMAINS", "https://mail.google.com/path,signaler-pa.clients6.google.com:443")
+    monkeypatch.setenv("BYPASS_DOMAIN_ZONES", "*.google.com,https://sub.example.org/")
+
+    cfg = mod.compose_config(_source_config())
+    domain_rule = next(r for r in cfg["routing"]["rules"] if "domain" in r)
+
+    assert "full:mail.google.com" in domain_rule["domain"]
+    assert "full:signaler-pa.clients6.google.com" in domain_rule["domain"]
+    assert "domain:google.com" in domain_rule["domain"]
+    assert "domain:sub.example.org" in domain_rule["domain"]
