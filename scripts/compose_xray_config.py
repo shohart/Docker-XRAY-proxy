@@ -221,6 +221,7 @@ def build_routing(proxy_tags: list[str]) -> dict:
         rules.append(
             {
                 "type": "field",
+                "network": "tcp,udp",
                 "outboundTag": proxy_tags[0],
             }
         )
@@ -228,6 +229,7 @@ def build_routing(proxy_tags: list[str]) -> dict:
         rules.append(
             {
                 "type": "field",
+                "network": "tcp,udp",
                 "balancerTag": "proxy-auto",
             }
         )

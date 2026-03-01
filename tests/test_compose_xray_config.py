@@ -122,3 +122,15 @@ def test_invalid_bypass_ip_mask_raises(monkeypatch):
 
     with pytest.raises(ValueError):
         mod.compose_config(_source_config())
+
+
+def test_routing_rules_have_effective_fields(monkeypatch):
+    mod = _load_compose_module()
+    monkeypatch.setenv("GATEWAY_MODE", "1")
+
+    cfg = mod.compose_config(_source_config())
+
+    effective_keys = {"domain", "ip", "port", "network", "protocol", "source", "sourcePort", "user", "inboundTag", "attrs"}
+    for rule in cfg["routing"]["rules"]:
+        assert rule.get("type") == "field"
+        assert any(key in rule for key in effective_keys), f"Rule has no effective fields: {rule}"
