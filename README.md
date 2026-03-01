@@ -25,7 +25,8 @@ Project runs `xray-core` in Docker and supports:
    - routing rules: local/private + bypass rules -> `direct`, all else -> proxy outbounds
    - if subscription has multiple proxy outbounds, automatic balancer `proxy-auto` is added and used as default route
 1. In `GATEWAY_MODE=1`, `gateway` service installs `iptables` rules:
-   - redirect LAN TCP traffic to transparent inbound port
+   - transparently intercept LAN traffic with `TPROXY` (TCP+UDP)
+   - install `ip rule` + routing table for marked packets (`local 0.0.0.0/0 dev lo`)
    - block direct forwarded internet traffic by default (fail-closed)
    - allow explicit bypass CIDRs/masks to go direct
 
@@ -71,18 +72,52 @@ Variables:
 ## Requirements
 
 - Linux host with Docker + Docker Compose v2
-- IPv4 forwarding enabled for gateway mode:
+- Host kernel with `TPROXY` support
+
+## Host Configuration (Required for Gateway Mode)
+
+Apply once:
 
 ```bash
-sudo sysctl -w net.ipv4.ip_forward=1
-```
+sudo modprobe nf_tproxy_core
+sudo modprobe xt_TPROXY
+sudo modprobe xt_socket
 
-Persist:
+sudo tee /etc/sysctl.d/99-xray-gateway.conf >/dev/null <<'EOF'
+net.ipv4.ip_forward=1
+net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.default.rp_filter=0
+net.ipv4.conf.all.src_valid_mark=1
+EOF
 
-```bash
-echo 'net.ipv4.ip_forward=1' | sudo tee /etc/sysctl.d/99-xray-gateway.conf
 sudo sysctl --system
 ```
+
+Persist kernel modules across reboot:
+
+```bash
+sudo tee /etc/modules-load.d/xray-gateway.conf >/dev/null <<'EOF'
+nf_tproxy_core
+xt_TPROXY
+xt_socket
+EOF
+```
+
+Verify after `docker compose up -d`:
+
+```bash
+ip rule show
+ip route show table 100
+iptables -t mangle -S XRAY_GW
+docker compose logs --tail=100 gateway
+docker compose logs --tail=100 xray
+```
+
+Expected:
+
+- `ip rule` contains `fwmark 0x1 lookup 100`
+- `table 100` contains `local 0.0.0.0/0 dev lo`
+- xray log does **not** contain `failed to set IP_TRANSPARENT`
 
 ## Start
 

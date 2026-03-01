@@ -150,3 +150,24 @@ def test_bypass_domains_accept_url_and_hostport_formats(monkeypatch):
     assert "full:signaler-pa.clients6.google.com" in domain_rule["domain"]
     assert "domain:google.com" in domain_rule["domain"]
     assert "domain:sub.example.org" in domain_rule["domain"]
+
+
+def test_existing_direct_outbound_is_preserved():
+    mod = _load_compose_module()
+    src = {
+        "log": {"loglevel": "info"},
+        "outbounds": [
+            {
+                "tag": "node1",
+                "protocol": "vless",
+                "settings": {"vnext": [{"address": "example.com", "port": 443, "users": []}]},
+            },
+            {"tag": "direct", "protocol": "freedom", "settings": {}},
+            {"tag": "block", "protocol": "blackhole", "settings": {}},
+        ],
+    }
+
+    cfg = mod.compose_config(src)
+    tags = [o.get("tag") for o in cfg["outbounds"]]
+    assert tags.count("direct") == 1
+    assert tags.count("block") == 1

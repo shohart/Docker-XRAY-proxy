@@ -110,14 +110,29 @@ def parse_ip_ranges() -> list[str]:
 
 
 def ensure_direct_block(outbounds: list[dict]) -> list[dict]:
-    have_direct = any(o.get("tag") == "direct" for o in outbounds)
-    have_block = any(o.get("tag") == "block" for o in outbounds)
+    direct = None
+    block = None
+    result = []
 
-    result = [o for o in outbounds if o.get("tag") not in ("direct", "block")]
-    if not have_direct:
-        result.append({"tag": "direct", "protocol": "freedom", "settings": {}})
-    if not have_block:
-        result.append({"tag": "block", "protocol": "blackhole", "settings": {}})
+    for outbound in outbounds:
+        tag = outbound.get("tag")
+        if tag == "direct":
+            if direct is None:
+                direct = outbound
+            continue
+        if tag == "block":
+            if block is None:
+                block = outbound
+            continue
+        result.append(outbound)
+
+    if direct is None:
+        direct = {"tag": "direct", "protocol": "freedom", "settings": {}}
+    if block is None:
+        block = {"tag": "block", "protocol": "blackhole", "settings": {}}
+
+    result.append(direct)
+    result.append(block)
     return result
 
 
