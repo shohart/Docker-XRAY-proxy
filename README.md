@@ -23,6 +23,7 @@ Project runs `xray-core` in Docker and supports:
    - local inbounds (HTTP/SOCKS + optional transparent `dokodemo-door`)
    - outbounds from subscription (proxy nodes), plus `direct` and `block` if missing
    - routing rules: local/private + bypass rules -> `direct`, all else -> proxy outbounds
+   - if subscription has multiple proxy outbounds, automatic balancer `proxy-auto` is added and used as default route
 1. In `GATEWAY_MODE=1`, `gateway` service installs `iptables` rules:
    - redirect LAN TCP traffic to transparent inbound port
    - block direct forwarded internet traffic by default (fail-closed)

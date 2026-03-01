@@ -34,6 +34,24 @@ def _source_config():
     }
 
 
+def _source_config_two_nodes():
+    return {
+        "log": {"loglevel": "info"},
+        "outbounds": [
+            {
+                "tag": "node1",
+                "protocol": "vless",
+                "settings": {"vnext": [{"address": "example.com", "port": 443, "users": []}]},
+            },
+            {
+                "tag": "node2",
+                "protocol": "vless",
+                "settings": {"vnext": [{"address": "example.org", "port": 443, "users": []}]},
+            },
+        ],
+    }
+
+
 def test_gateway_mode_adds_tproxy_and_bypass_rules(monkeypatch):
     mod = _load_compose_module()
     monkeypatch.setenv("GATEWAY_MODE", "1")
@@ -74,10 +92,33 @@ def test_gateway_mode_off_has_no_tproxy(monkeypatch):
     assert "dokodemo-door" not in protocols
 
 
+def test_single_proxy_adds_default_outbound_rule(monkeypatch):
+    mod = _load_compose_module()
+    monkeypatch.delenv("GATEWAY_MODE", raising=False)
+
+    cfg = mod.compose_config(_source_config())
+    default_rule = cfg["routing"]["rules"][-1]
+    assert default_rule["outboundTag"] == "node1"
+    assert "balancers" not in cfg["routing"]
+
+
+def test_multi_proxy_adds_balancer_and_default_balancer_rule(monkeypatch):
+    mod = _load_compose_module()
+    monkeypatch.delenv("GATEWAY_MODE", raising=False)
+
+    cfg = mod.compose_config(_source_config_two_nodes())
+    assert "balancers" in cfg["routing"]
+    bal = cfg["routing"]["balancers"][0]
+    assert bal["tag"] == "proxy-auto"
+    assert bal["selector"] == ["node1", "node2"]
+
+    default_rule = cfg["routing"]["rules"][-1]
+    assert default_rule["balancerTag"] == "proxy-auto"
+
+
 def test_invalid_bypass_ip_mask_raises(monkeypatch):
     mod = _load_compose_module()
     monkeypatch.setenv("BYPASS_IP_MASKS", "203.*.10.*")
 
     with pytest.raises(ValueError):
         mod.compose_config(_source_config())
-

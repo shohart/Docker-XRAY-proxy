@@ -162,7 +162,24 @@ def build_inbounds() -> list[dict]:
     return inbounds
 
 
-def build_routing() -> dict:
+def extract_proxy_tags(outbounds: list[dict]) -> list[str]:
+    tags = []
+    for outbound in outbounds:
+        proto = outbound.get("protocol")
+        tag = outbound.get("tag")
+        if not tag:
+            continue
+        if tag in ("direct", "block"):
+            continue
+        if proto in ("freedom", "blackhole", "dns"):
+            continue
+        tags.append(tag)
+    if not tags:
+        raise ValueError("No proxy outbound tags available for routing")
+    return tags
+
+
+def build_routing(proxy_tags: list[str]) -> dict:
     exact_domains = parse_csv_env("BYPASS_DOMAINS")
     zone_domains = parse_csv_env("BYPASS_DOMAIN_ZONES")
     bypass_ips = parse_ip_ranges()
@@ -196,6 +213,25 @@ def build_routing() -> dict:
                 "outboundTag": "direct",
             }
         )
+
+    # Default route for all other traffic through proxy path:
+    # - single proxy tag -> direct outboundTag to that node
+    # - multi-proxy -> use balancer for automatic failover/load spread
+    if len(proxy_tags) == 1:
+        rules.append(
+            {
+                "type": "field",
+                "outboundTag": proxy_tags[0],
+            }
+        )
+    else:
+        rules.append(
+            {
+                "type": "field",
+                "balancerTag": "proxy-auto",
+            }
+        )
+
     return {"domainStrategy": "IPOnDemand", "rules": rules}
 
 
@@ -205,12 +241,21 @@ def compose_config(src: dict) -> dict:
         raise ValueError("Source config has no outbounds")
 
     prepared_outbounds = reorder_outbounds(ensure_direct_block(outbounds))
-    return {
+    proxy_tags = extract_proxy_tags(prepared_outbounds)
+    config = {
         "log": src.get("log", {"loglevel": "info"}),
         "inbounds": build_inbounds(),
         "outbounds": prepared_outbounds,
-        "routing": build_routing(),
+        "routing": build_routing(proxy_tags),
     }
+    if len(proxy_tags) > 1:
+        config["routing"]["balancers"] = [
+            {
+                "tag": "proxy-auto",
+                "selector": proxy_tags,
+            }
+        ]
+    return config
 
 
 def main() -> int:
