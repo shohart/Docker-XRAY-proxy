@@ -113,9 +113,30 @@ def test_multi_proxy_adds_balancer_and_default_balancer_rule(monkeypatch):
     bal = cfg["routing"]["balancers"][0]
     assert bal["tag"] == "proxy-auto"
     assert bal["selector"] == ["node1", "node2"]
+    assert bal["strategy"]["type"] == "random"
+    assert bal["fallbackTag"] == "block"
 
     default_rule = cfg["routing"]["rules"][-1]
     assert default_rule["balancerTag"] == "proxy-auto"
+    assert "observatory" in cfg
+    assert cfg["observatory"]["subjectSelector"] == ["node1", "node2"]
+
+
+def test_balancer_strategy_from_env(monkeypatch):
+    mod = _load_compose_module()
+    monkeypatch.setenv("XRAY_BALANCER_STRATEGY", "leastPing")
+
+    cfg = mod.compose_config(_source_config_two_nodes())
+    bal = cfg["routing"]["balancers"][0]
+    assert bal["strategy"]["type"] == "leastPing"
+
+
+def test_invalid_balancer_strategy_raises(monkeypatch):
+    mod = _load_compose_module()
+    monkeypatch.setenv("XRAY_BALANCER_STRATEGY", "invalid-mode")
+
+    with pytest.raises(ValueError):
+        mod.compose_config(_source_config_two_nodes())
 
 
 def test_invalid_bypass_ip_mask_raises(monkeypatch):

@@ -23,7 +23,9 @@ Project runs `xray-core` in Docker and supports:
    - local inbounds (HTTP/SOCKS + optional transparent `dokodemo-door`)
    - outbounds from subscription (proxy nodes), plus `direct` and `block` if missing
    - routing rules: local/private + bypass rules -> `direct`, all else -> proxy outbounds
-   - if subscription has multiple proxy outbounds, automatic balancer `proxy-auto` is added and used as default route
+   - if subscription has multiple proxy outbounds, `proxy-auto` balancer is added and used as default route
+   - `observatory` is enabled to continuously probe all proxy outbounds and keep health state fresh
+   - default balancer strategy is `random`, so client requests are spread randomly across healthy nodes
 1. In `GATEWAY_MODE=1`, `gateway` service installs `iptables` rules:
    - transparently intercept LAN traffic with `TPROXY` (TCP+UDP)
    - install `ip rule` + routing table for marked packets (`local 0.0.0.0/0 dev lo`)
@@ -51,6 +53,12 @@ BYPASS_DOMAINS=example.com,api.example.com
 BYPASS_DOMAIN_ZONES=.local,.corp,example.org
 BYPASS_IP_CIDRS=203.0.113.0/24
 BYPASS_IP_MASKS=198.51.100.*,203.0.*.*
+
+XRAY_BALANCER_STRATEGY=random
+XRAY_BALANCER_FALLBACK_TAG=block
+XRAY_PROBE_URL=https://www.google.com/generate_204
+XRAY_PROBE_INTERVAL=20s
+XRAY_PROBE_CONCURRENCY=1
 ```
 
 Variables:
@@ -68,6 +76,11 @@ Variables:
 - `BYPASS_DOMAIN_ZONES`: domain suffixes/zones that should go `direct`
 - `BYPASS_IP_CIDRS`: CIDR ranges that should go `direct`
 - `BYPASS_IP_MASKS`: wildcard IPv4 masks (`*` only in trailing octets), converted to CIDR
+- `XRAY_BALANCER_STRATEGY`: balancing mode for multiple proxy nodes (`random`, `roundRobin`, `leastPing`, `leastLoad`)
+- `XRAY_BALANCER_FALLBACK_TAG`: outbound used when all proxy nodes are down (`block` recommended for fail-closed)
+- `XRAY_PROBE_URL`: probe target used by Xray observatory to test outbound quality/availability
+- `XRAY_PROBE_INTERVAL`: observatory probe interval
+- `XRAY_PROBE_CONCURRENCY`: `1/true` enables concurrent probing, `0/false` disables
 
 ## Requirements
 
@@ -170,6 +183,15 @@ docker compose restart xray
 ```
 
 Use a host-side watcher/timer if automatic restart after config update is required.
+
+## Multi-Server Behavior
+
+When subscription provides multiple proxy servers:
+
+- all proxy outbounds stay under continuous observatory probing
+- unhealthy nodes are excluded by balancer decisions
+- healthy nodes receive traffic by selected strategy (`random` by default)
+- fallback is controlled by `XRAY_BALANCER_FALLBACK_TAG` (default `block` to avoid leaks)
 
 ## Testing
 

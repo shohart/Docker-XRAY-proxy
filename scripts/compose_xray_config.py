@@ -15,6 +15,13 @@ LOCAL_IP_RANGES = [
 ]
 
 
+def parse_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 def parse_csv_env(name: str) -> list[str]:
     raw = os.getenv(name, "")
     items = []
@@ -283,6 +290,55 @@ def build_routing(proxy_tags: list[str]) -> dict:
     return {"domainStrategy": "IPOnDemand", "rules": rules}
 
 
+def build_balancer(proxy_tags: list[str]) -> dict:
+    strategy = os.getenv("XRAY_BALANCER_STRATEGY", "random").strip()
+    if strategy not in ("random", "roundRobin", "leastPing", "leastLoad"):
+        raise ValueError(
+            "XRAY_BALANCER_STRATEGY must be one of: random, roundRobin, leastPing, leastLoad"
+        )
+
+    balancer = {
+        "tag": "proxy-auto",
+        "selector": proxy_tags,
+        # Fail-closed by default: if all proxy nodes are down, do not leak traffic directly.
+        "fallbackTag": os.getenv("XRAY_BALANCER_FALLBACK_TAG", "block").strip() or "block",
+        "strategy": {"type": strategy},
+    }
+
+    if strategy == "leastLoad":
+        settings = {}
+        expected = os.getenv("XRAY_BALANCER_EXPECTED")
+        max_rtt = os.getenv("XRAY_BALANCER_MAX_RTT")
+        tolerance = os.getenv("XRAY_BALANCER_TOLERANCE")
+        baselines = parse_csv_env("XRAY_BALANCER_BASELINES")
+        costs = parse_csv_env("XRAY_BALANCER_COSTS")
+        if expected:
+            settings["expected"] = int(expected)
+        if max_rtt:
+            settings["maxRTT"] = max_rtt
+        if tolerance:
+            settings["tolerance"] = int(tolerance)
+        if baselines:
+            settings["baselines"] = baselines
+        if costs:
+            settings["costs"] = costs
+        if settings:
+            balancer["strategy"]["settings"] = settings
+    return balancer
+
+
+def build_observatory(proxy_tags: list[str]) -> dict:
+    return {
+        "subjectSelector": proxy_tags,
+        "probeUrl": os.getenv(
+            "XRAY_PROBE_URL",
+            "https://www.google.com/generate_204",
+        ).strip(),
+        "probeInterval": os.getenv("XRAY_PROBE_INTERVAL", "20s").strip(),
+        "enableConcurrency": parse_bool_env("XRAY_PROBE_CONCURRENCY", True),
+    }
+
+
 def compose_config(src: dict) -> dict:
     outbounds = src.get("outbounds")
     if not isinstance(outbounds, list) or not outbounds:
@@ -297,12 +353,8 @@ def compose_config(src: dict) -> dict:
         "routing": build_routing(proxy_tags),
     }
     if len(proxy_tags) > 1:
-        config["routing"]["balancers"] = [
-            {
-                "tag": "proxy-auto",
-                "selector": proxy_tags,
-            }
-        ]
+        config["routing"]["balancers"] = [build_balancer(proxy_tags)]
+        config["observatory"] = build_observatory(proxy_tags)
     return config
 
 
