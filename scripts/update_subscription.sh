@@ -4,7 +4,7 @@
 # - If payload is full Xray JSON (has .inbounds and .outbounds) -> use as source
 # - Else (HTML / text / base64 subscription) -> extract links via html2xray.py and generate source Xray config
 # - Compose final local config via compose_xray_config.py (gateway/routing/bypass policy)
-# - Uses atomic replace (mv) and validates JSON with jq before replacing
+# - Applies config via single-writer pipeline (lock + validation + atomic replace)
 # - Logs to stdout + /var/log/xray/updater.log (best-effort)
 
 set -eu
@@ -14,20 +14,16 @@ TARGET_CONFIG="/etc/xray/config.json"
 DOWNLOAD_FILE="/tmp/subscription.body"
 WORK_CONFIG="/tmp/new-config.json"
 FINAL_CONFIG="/tmp/new-config.final.json"
+APPLY_SCRIPT="/scripts/apply_xray_config.py"
+RAW_SUBSCRIPTION_DIR="/var/log/xray/raw"
+RAW_SUBSCRIPTION_FILE="$RAW_SUBSCRIPTION_DIR/subscription.raw"
+SAVE_RAW_SUBSCRIPTION="${XRAY_SAVE_RAW_SUBSCRIPTION:-0}"
 
 log() {
   msg="$(date '+%Y-%m-%d %H:%M:%S') $1"
   echo "$msg"
   mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
   echo "$msg" >> "$LOG_FILE" 2>/dev/null || true
-}
-
-sha256_file() {
-  if [ -f "$1" ]; then
-    sha256sum "$1" | awk '{print $1}'
-  else
-    echo ""
-  fi
 }
 
 require_bin() {
@@ -42,6 +38,11 @@ require_bin curl
 require_bin jq
 require_bin python3
 
+if [ ! -f "$APPLY_SCRIPT" ]; then
+  log "ERROR Apply pipeline script not found: $APPLY_SCRIPT"
+  exit 1
+fi
+
 if [ -z "${XRAY_SUBSCRIPTION_URL:-}" ]; then
   log "ERROR XRAY_SUBSCRIPTION_URL is not set"
   exit 1
@@ -53,8 +54,6 @@ if ! curl -fsSL --connect-timeout 10 --max-time 60 -o "$DOWNLOAD_FILE" "$XRAY_SU
   log "ERROR Failed to download subscription"
   exit 1
 fi
-
-old_sum="$(sha256_file "$TARGET_CONFIG")"
 
 # Decide mode: full JSON vs. "links" (HTML/text/base64/etc.)
 if jq -e '.inbounds and .outbounds' "$DOWNLOAD_FILE" >/dev/null 2>&1; then
@@ -107,20 +106,30 @@ if ! jq -e '.inbounds and .outbounds and .routing' "$FINAL_CONFIG" >/dev/null 2>
   exit 1
 fi
 
-new_sum="$(sha256_file "$FINAL_CONFIG")"
-if [ -n "$new_sum" ] && [ "$new_sum" != "$old_sum" ]; then
-  # Atomic replace
-  mv -f "$FINAL_CONFIG" "$TARGET_CONFIG"
-  rm -f "$WORK_CONFIG" 2>/dev/null || true
-  log "INFO Config updated (checksum changed)"
-else
+# Single-writer apply pipeline (validate + lock + atomic replace)
+if ! python3 "$APPLY_SCRIPT" "$FINAL_CONFIG" "$TARGET_CONFIG"; then
+  log "ERROR Failed to apply final config; keep current config"
   rm -f "$FINAL_CONFIG" 2>/dev/null || true
   rm -f "$WORK_CONFIG" 2>/dev/null || true
-  log "INFO Config unchanged; no replace"
+  exit 1
 fi
 
-# Keep a copy of raw payload for troubleshooting
-# (best-effort, may fail if /etc/xray is RO in some setups)
-cp "$DOWNLOAD_FILE" /etc/xray/subscription.raw 2>/dev/null || true
+rm -f "$FINAL_CONFIG" 2>/dev/null || true
+rm -f "$WORK_CONFIG" 2>/dev/null || true
+log "INFO Apply pipeline finished"
+
+# Optional raw payload retention for troubleshooting.
+# Disabled by default to avoid leaking provider data into repo-mounted config paths.
+if [ "$SAVE_RAW_SUBSCRIPTION" = "1" ]; then
+  mkdir -p "$RAW_SUBSCRIPTION_DIR" 2>/dev/null || true
+  if cp "$DOWNLOAD_FILE" "$RAW_SUBSCRIPTION_FILE" 2>/dev/null; then
+    chmod 600 "$RAW_SUBSCRIPTION_FILE" 2>/dev/null || true
+    log "INFO Saved raw subscription payload to $RAW_SUBSCRIPTION_FILE"
+  else
+    log "WARNING Failed to persist raw subscription payload"
+  fi
+else
+  log "INFO Raw subscription retention is disabled (XRAY_SAVE_RAW_SUBSCRIPTION=0)"
+fi
 
 log "INFO Done"

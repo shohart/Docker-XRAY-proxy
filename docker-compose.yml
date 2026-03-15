@@ -54,3 +54,36 @@ services:
         done
     env_file:
       - .env
+
+  xui:
+    image: ${THREEX_UI_IMAGE:-ghcr.io/mhsanaei/3x-ui:v2.5.2}
+    container_name: xray-3x-ui
+    restart: unless-stopped
+    ports:
+      - "${THREEX_UI_BIND_IP:-127.0.0.1}:${THREEX_UI_PORT:-2053}:2053/tcp"
+    volumes:
+      - xui-db:/etc/x-ui
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    tmpfs:
+      - /tmp
+    networks:
+      - control-plane
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "test -s /etc/x-ui/x-ui.db && grep -qiE ':[0]*805 ' /proc/net/tcp /proc/net/tcp6"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+volumes:
+  xui-db:
+
+networks:
+  control-plane:
+    driver: bridge

@@ -38,6 +38,8 @@ env/
 logs/
 data/*.log
 data/logs/
+data/raw/
+config/subscription.raw
 *.pid
 *.seed
 *.out
