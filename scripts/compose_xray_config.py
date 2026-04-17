@@ -334,7 +334,7 @@ def build_observatory(proxy_tags: list[str]) -> dict:
             "XRAY_PROBE_URL",
             "https://www.google.com/generate_204",
         ).strip(),
-        "probeInterval": os.getenv("XRAY_PROBE_INTERVAL", "20s").strip(),
+        "probeInterval": os.getenv("XRAY_PROBE_INTERVAL", "5s").strip(),
         "enableConcurrency": parse_bool_env("XRAY_PROBE_CONCURRENCY", True),
     }
 

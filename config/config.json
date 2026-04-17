@@ -67,7 +67,7 @@
       "settings": {
         "vnext": [
           {
-            "address": "45.153.71.101",
+            "address": "easyweather26.argonaft1.online",
             "port": 7443,
             "users": [
               {
@@ -99,6 +99,37 @@
         "vnext": [
           {
             "address": "45.153.71.101",
+            "port": 7443,
+            "users": [
+              {
+                "id": "2f39e6a0-03ae-4e0d-b57e-3e6a6838ba7d",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "ws",
+        "security": "tls",
+        "wsSettings": {
+          "path": "/api",
+          "headers": {
+            "Host": "easydash26.argonaft1.online"
+          }
+        },
+        "tlsSettings": {
+          "serverName": "easydash26.argonaft1.online"
+        }
+      }
+    },
+    {
+      "tag": "node3",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "easyweather26.argonaft1.online",
             "port": 8443,
             "users": [
               {
@@ -136,13 +167,54 @@
     "rules": [
       {
         "type": "field",
+        "domain": [
+          "domain:ru",
+          "domain:local",
+          "domain:рф"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
         "ip": [
           "10.0.0.0/8",
           "172.16.0.0/12",
-          "192.168.0.0/16"
+          "192.168.0.0/16",
+          "127.0.0.0/8",
+          "169.254.0.0/16",
+          "192.168.1.0/24"
         ],
         "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "balancerTag": "proxy-auto"
+      }
+    ],
+    "balancers": [
+      {
+        "tag": "proxy-auto",
+        "selector": [
+          "node1",
+          "node2",
+          "node3"
+        ],
+        "fallbackTag": "block",
+        "strategy": {
+          "type": "random"
+        }
       }
     ]
+  },
+  "observatory": {
+    "subjectSelector": [
+      "node1",
+      "node2",
+      "node3"
+    ],
+    "probeUrl": "https://www.google.com/generate_204",
+    "probeInterval": "5s",
+    "enableConcurrency": true
   }
 }

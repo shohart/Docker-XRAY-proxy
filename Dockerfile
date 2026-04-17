@@ -12,7 +12,7 @@ COPY config/ ./
 EXPOSE 3128 1080
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD xray run -test -c /etc/xray/config.json
 
 # Default command

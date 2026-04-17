@@ -123,5 +123,10 @@ for ipr in $BYPASS_CIDRS; do
   iptables -A XRAY_GW_FWD -d "$ipr" -j ACCEPT
 done
 iptables -A XRAY_GW_FWD -j REJECT
+for port in 9980 8780 11434 8081 11437 11436 8782 8000 9443 6333 6334 18789 8782 3000 8089 1143 1993 8090 5173 5001 8083 5171; do
+iptables -t nat -D PREROUTING -p tcp -d 192.168.1.122 --dport $port -j DOCKER 2>/dev/null || true
+iptables -t nat -I PREROUTING 1 -p tcp -d 192.168.1.122 --dport $port -j DOCKER
+iptables -I XRAY_GW_FWD 1 -p tcp --dport $port -j ACCEPT
+done
 
 log "INFO Gateway iptables rules applied"
