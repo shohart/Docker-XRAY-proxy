@@ -6,6 +6,10 @@
 .env.*
 !.env.example
 
+# OpenVPN credentials / configs (contain private keys)
+secrets/
+*.ovpn
+
 # -----------------------------
 # Python
 # -----------------------------

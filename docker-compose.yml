@@ -34,10 +34,49 @@ services:
         /bin/sh /scripts/gateway_iptables.sh
         tail -f /dev/null
 
+  openvpn:
+    image: alpine:3.20
+    container_name: xray-openvpn
+    restart: unless-stopped
+    # Bridge network on purpose: redirect-gateway inside must NOT hijack the
+    # host's default route. xray (host net) reaches the SOCKS proxy via the
+    # loopback-published port below.
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    dns:
+      # sockd resolves target hostnames through the tunnel (routed via tun0).
+      - 1.1.1.1
+      - 8.8.8.8
+    ports:
+      - "127.0.0.1:${OPENVPN_SOCKS_PORT:-1081}:1080"
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./secrets/bykinpc.ovpn:/etc/openvpn/client.ovpn:ro
+    environment:
+      OVPN_CONFIG: /etc/openvpn/client.ovpn
+      OPENVPN_SOCKS_LISTEN_PORT: "1080"
+    entrypoint:
+      - /bin/sh
+      - /scripts/openvpn_tunnel.sh
+    healthcheck:
+      # Healthy only if traffic actually egresses through the SOCKS/tunnel path.
+      test:
+        - CMD-SHELL
+        - "curl -fsS -m 10 --socks5 127.0.0.1:1080 https://www.google.com/generate_204 >/dev/null 2>&1 || exit 1"
+      interval: 30s
+      timeout: 12s
+      start_period: 40s
+      retries: 3
+
   updater:
     image: python:3.12-alpine
     container_name: xray-updater
     restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     volumes:
       - ./config:/etc/xray
       - ./data:/var/log/xray
