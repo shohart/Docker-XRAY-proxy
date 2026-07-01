@@ -339,10 +339,39 @@ def build_observatory(proxy_tags: list[str]) -> dict:
     }
 
 
+def build_openvpn_outbound() -> dict | None:
+    """Optional backup tunnel exposed as a SOCKS5 outbound.
+
+    The openvpn container runs an OpenVPN client + local SOCKS5 proxy that
+    egresses through the tunnel. We add it as a regular proxy outbound so it
+    joins the balancer selector and the observatory probe automatically: with
+    the leastPing strategy it is only chosen when every xray node is down or
+    slower than the VPN, i.e. a genuine fallback path.
+    """
+    if not parse_bool_env("OPENVPN_FALLBACK_ENABLED", False):
+        return None
+
+    tag = os.getenv("OPENVPN_OUT_TAG", "openvpn-out").strip() or "openvpn-out"
+    # xray runs on the host network and reaches the container's SOCKS proxy via
+    # the loopback-published port (see docker-compose openvpn service).
+    address = os.getenv("OPENVPN_SOCKS_ADDR", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.getenv("OPENVPN_SOCKS_PORT", "1081"))
+    return {
+        "tag": tag,
+        "protocol": "socks",
+        "settings": {"servers": [{"address": address, "port": port}]},
+    }
+
+
 def compose_config(src: dict) -> dict:
     outbounds = src.get("outbounds")
     if not isinstance(outbounds, list) or not outbounds:
         raise ValueError("Source config has no outbounds")
+
+    outbounds = list(outbounds)
+    openvpn_outbound = build_openvpn_outbound()
+    if openvpn_outbound is not None:
+        outbounds.append(openvpn_outbound)
 
     prepared_outbounds = reorder_outbounds(ensure_direct_block(outbounds))
     proxy_tags = extract_proxy_tags(prepared_outbounds)
