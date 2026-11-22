@@ -1,0 +1,15 @@
+services:
+  xray-smarttube:
+    image: ${XRAY_IMAGE:-ghcr.io/xtls/xray-core:26.2.6}
+    container_name: xray-smarttube
+    restart: unless-stopped
+    network_mode: host
+    entrypoint: ["/usr/local/bin/xray"]
+    command: ["run", "-c", "/etc/xray/config.json"]
+    volumes:
+      - ./config.json:/etc/xray/config.json:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
