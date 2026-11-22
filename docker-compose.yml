@@ -131,6 +131,10 @@ services:
     volumes:
       - ./scripts:/scripts:ro
       - ./data:/var/log/xray
+      # tunnel_policy.json (tunnelctl control file), nodes_meta.json, config.json
+      - ./config:/etc/xray:ro
+      # rotation hour (~06:00) in host local time, not UTC
+      - /etc/localtime:/etc/localtime:ro
     env_file:
       - .env
     depends_on:
