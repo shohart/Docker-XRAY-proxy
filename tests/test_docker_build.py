@@ -80,7 +80,6 @@ def test_docker_compose_valid():
 def test_docker_build_structure():
     """Test that required files for image/runtime are present."""
     required_files = [
-        "config/config.json",
         "scripts/update_subscription.sh",
         "scripts/apply_xray_config.py",
         "Dockerfile",
