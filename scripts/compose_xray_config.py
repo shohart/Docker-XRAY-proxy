@@ -165,6 +165,26 @@ def reorder_outbounds(outbounds: list[dict]) -> list[dict]:
     return proxy + other + direct + block
 
 
+def build_api_inbound() -> dict | None:
+    """Optional gRPC API inbound for tunnelctl / external control.
+
+    Listens on 127.0.0.1 only; host-network containers can reach it.
+    Not exposed to LAN or bridge networks.
+    """
+    if not parse_bool_env("XRAY_API_ENABLED", False):
+        return None
+
+    listen = os.getenv("XRAY_API_LISTEN", "127.0.0.1").strip() or "127.0.0.1"
+    port = int(os.getenv("XRAY_API_PORT", "10085"))
+    return {
+        "tag": "api-in",
+        "listen": listen,
+        "port": port,
+        "protocol": "dokodemo-door",
+        "settings": {"address": "127.0.0.1"},
+    }
+
+
 def build_inbounds() -> list[dict]:
     http_port = int(os.getenv("HTTP_PROXY_PORT", "3128"))
     socks_port = int(os.getenv("SOCKS_PROXY_PORT", "1080"))
@@ -198,6 +218,7 @@ def build_inbounds() -> list[dict]:
         inbounds.append(
             {
                 "tag": "tproxy-in",
+                "listen": "0.0.0.0",
                 "port": tproxy_port,
                 "protocol": "dokodemo-door",
                 "settings": {
@@ -212,11 +233,24 @@ def build_inbounds() -> list[dict]:
                 "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
             }
         )
+
+    api_inbound = build_api_inbound()
+    if api_inbound is not None:
+        inbounds.append(api_inbound)
+
     return inbounds
 
 
-def extract_proxy_tags(outbounds: list[dict]) -> list[str]:
-    tags = []
+def extract_proxy_tags(outbounds: list[dict]) -> tuple[list[str], list[str], str | None]:
+    """Split outbounds into VLESS nodes (from subscription) and the OVPN fallback.
+
+    Returns:
+        vless_tags:   tags of VLESS outbounds from subscription (prefix "node")
+        all_proxy_tags: vless_tags + ovpn_tag (for observatory + balancer selector)
+        ovpn_tag:     the OVPN outbound tag, or None if OVPN fallback is disabled
+    """
+    vless_tags = []
+    ovpn_tag = None
     for outbound in outbounds:
         proto = outbound.get("protocol")
         tag = outbound.get("tag")
@@ -226,10 +260,13 @@ def extract_proxy_tags(outbounds: list[dict]) -> list[str]:
             continue
         if proto in ("freedom", "blackhole", "dns"):
             continue
-        tags.append(tag)
-    if not tags:
+        if proto == "socks" and tag == os.getenv("OPENVPN_OUT_TAG", "openvpn-out"):
+            ovpn_tag = tag
+            continue
+        vless_tags.append(tag)
+    if not vless_tags and ovpn_tag is None:
         raise ValueError("No proxy outbound tags available for routing")
-    return tags
+    return vless_tags, vless_tags + ([ovpn_tag] if ovpn_tag else []), ovpn_tag
 
 
 def build_routing(proxy_tags: list[str]) -> dict:
@@ -250,6 +287,17 @@ def build_routing(proxy_tags: list[str]) -> dict:
     ip_items = LOCAL_IP_RANGES + bypass_ips
 
     rules = []
+
+    # Route API traffic to the API service FIRST (before any bypass rules)
+    if parse_bool_env("XRAY_API_ENABLED", False):
+        rules.append(
+            {
+                "type": "field",
+                "inboundTag": ["api-in"],
+                "outboundTag": "api",
+            }
+        )
+
     if domain_items:
         rules.append(
             {
@@ -290,7 +338,7 @@ def build_routing(proxy_tags: list[str]) -> dict:
     return {"domainStrategy": "IPOnDemand", "rules": rules}
 
 
-def build_balancer(proxy_tags: list[str]) -> dict:
+def build_balancer(proxy_tags: list[str], fallback_tag: str = "block") -> dict:
     strategy = os.getenv("XRAY_BALANCER_STRATEGY", "random").strip()
     if strategy not in ("random", "roundRobin", "leastPing", "leastLoad"):
         raise ValueError(
@@ -300,8 +348,10 @@ def build_balancer(proxy_tags: list[str]) -> dict:
     balancer = {
         "tag": "proxy-auto",
         "selector": proxy_tags,
-        # Fail-closed by default: if all proxy nodes are down, do not leak traffic directly.
-        "fallbackTag": os.getenv("XRAY_BALANCER_FALLBACK_TAG", "block").strip() or "block",
+        # fallbackTag fires when the strategy can't pick any candidate
+        # (e.g. leastPing with all probed nodes dead). This is the OVPN
+        # rescue path: only reached when every VLESS node is unavailable.
+        "fallbackTag": fallback_tag,
         "strategy": {"type": strategy},
     }
 
@@ -334,7 +384,7 @@ def build_observatory(proxy_tags: list[str]) -> dict:
             "XRAY_PROBE_URL",
             "https://www.google.com/generate_204",
         ).strip(),
-        "probeInterval": os.getenv("XRAY_PROBE_INTERVAL", "5s").strip(),
+        "probeInterval": os.getenv("XRAY_PROBE_INTERVAL", "30s").strip(),
         "enableConcurrency": parse_bool_env("XRAY_PROBE_CONCURRENCY", True),
     }
 
@@ -363,6 +413,21 @@ def build_openvpn_outbound() -> dict | None:
     }
 
 
+def build_dns(src_dns: dict | None = None) -> dict:
+    if isinstance(src_dns, dict) and src_dns.get("servers"):
+        return src_dns
+    dns_servers_raw = os.getenv("XRAY_DNS_SERVERS", "").strip()
+    if dns_servers_raw:
+        servers = [s.strip() for s in dns_servers_raw.split(",") if s.strip()]
+    else:
+        gw_dns = os.getenv("GATEWAY_DNS_SERVER", "192.168.1.123").strip() or "192.168.1.123"
+        servers = [gw_dns, "8.8.8.8"]
+    return {
+        "servers": servers,
+        "queryStrategy": "UseIPv4",
+    }
+
+
 def compose_config(src: dict) -> dict:
     outbounds = src.get("outbounds")
     if not isinstance(outbounds, list) or not outbounds:
@@ -374,16 +439,34 @@ def compose_config(src: dict) -> dict:
         outbounds.append(openvpn_outbound)
 
     prepared_outbounds = reorder_outbounds(ensure_direct_block(outbounds))
-    proxy_tags = extract_proxy_tags(prepared_outbounds)
+    vless_tags, all_proxy_tags, ovpn_tag = extract_proxy_tags(prepared_outbounds)
+
+    # The balancer picks only among VLESS nodes; OVPN is NOT in the selector
+    # and is reached exclusively via fallbackTag when all VLESS are dead.
+    # This implements the "OVPN as backup only" policy without external watchdogs.
+    fallback_tag = ovpn_tag if ovpn_tag is not None else os.getenv("XRAY_BALANCER_FALLBACK_TAG", "block")
+
     config = {
         "log": src.get("log", {"loglevel": "info"}),
+        "dns": build_dns(src.get("dns")),
         "inbounds": build_inbounds(),
         "outbounds": prepared_outbounds,
-        "routing": build_routing(proxy_tags),
+        "routing": build_routing(vless_tags),
     }
-    if len(proxy_tags) > 1:
-        config["routing"]["balancers"] = [build_balancer(proxy_tags)]
-        config["observatory"] = build_observatory(proxy_tags)
+    if len(vless_tags) > 1:
+        config["routing"]["balancers"] = [build_balancer(vless_tags, fallback_tag=fallback_tag)]
+        config["observatory"] = build_observatory(vless_tags)
+    elif len(vless_tags) == 1:
+        # Single VLESS node: no balancer needed, but still want observatory
+        # for health visibility. Traffic goes directly to the node.
+        config["observatory"] = build_observatory(vless_tags)
+
+    if parse_bool_env("XRAY_API_ENABLED", False):
+        config["api"] = {
+            "tag": "api",
+            "services": ["RoutingService", "ObservatoryService"],
+        }
+
     return config
 
 

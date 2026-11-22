@@ -9,6 +9,15 @@ from pathlib import Path
 import pytest
 
 
+# Clean all XRAY/OpenVPN env vars to prevent host .env from leaking into tests.
+_XRAY_ENV_KEYS = [k for k in __import__('os').environ if k.startswith(('XRAY_', 'OPENVPN_', 'GATEWAY_', 'BYPASS_', 'HTTP_PROXY_PORT', 'SOCKS_PROXY_PORT', 'LAN_'))]
+
+@pytest.fixture(autouse=True)
+def _clean_env(monkeypatch):
+    for k in _XRAY_ENV_KEYS:
+        monkeypatch.delenv(k, raising=False)
+
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "compose_xray_config.py"
 
@@ -69,6 +78,7 @@ def test_gateway_mode_adds_tproxy_and_bypass_rules(monkeypatch):
     tproxy = next(i for i in cfg["inbounds"] if i.get("protocol") == "dokodemo-door")
     assert tproxy["port"] == 23456
     assert tproxy["settings"]["network"] == "tcp,udp"
+    assert tproxy["listen"] == "0.0.0.0"
     assert tproxy["streamSettings"]["sockopt"]["tproxy"] == "tproxy"
 
     rules = cfg["routing"]["rules"]
@@ -120,6 +130,40 @@ def test_multi_proxy_adds_balancer_and_default_balancer_rule(monkeypatch):
     assert default_rule["balancerTag"] == "proxy-auto"
     assert "observatory" in cfg
     assert cfg["observatory"]["subjectSelector"] == ["node1", "node2"]
+
+
+def test_ovpn_excluded_from_balancer_and_becomes_fallback(monkeypatch):
+    mod = _load_compose_module()
+    monkeypatch.delenv("GATEWAY_MODE", raising=False)
+    monkeypatch.setenv("OPENVPN_FALLBACK_ENABLED", "1")
+    monkeypatch.setenv("OPENVPN_OUT_TAG", "openvpn-out")
+
+    src = _source_config_two_nodes()
+    cfg = mod.compose_config(src)
+
+    bal = cfg["routing"]["balancers"][0]
+    # OVPN must NOT be in the rotation selector
+    assert "openvpn-out" not in bal["selector"]
+    assert bal["selector"] == ["node1", "node2"]
+    # OVPN must be the fallback
+    assert bal["fallbackTag"] == "openvpn-out"
+
+    # OVPN must NOT be in observatory (health checked by its own container healthcheck)
+    assert "openvpn-out" not in cfg["observatory"]["subjectSelector"]
+
+    # The OVPN outbound itself must still exist
+    tags = [o.get("tag") for o in cfg["outbounds"]]
+    assert "openvpn-out" in tags
+
+
+def test_ovpn_disabled_falls_back_to_block(monkeypatch):
+    mod = _load_compose_module()
+    monkeypatch.delenv("GATEWAY_MODE", raising=False)
+    monkeypatch.delenv("OPENVPN_FALLBACK_ENABLED", raising=False)
+
+    cfg = mod.compose_config(_source_config_two_nodes())
+    bal = cfg["routing"]["balancers"][0]
+    assert bal["fallbackTag"] == "block"
 
 
 def test_balancer_strategy_from_env(monkeypatch):
@@ -192,3 +236,24 @@ def test_existing_direct_outbound_is_preserved():
     tags = [o.get("tag") for o in cfg["outbounds"]]
     assert tags.count("direct") == 1
     assert tags.count("block") == 1
+
+
+def test_dns_configuration_default_and_custom(monkeypatch):
+    mod = _load_compose_module()
+
+    # Default fallback
+    cfg = mod.compose_config(_source_config())
+    assert "dns" in cfg
+    assert cfg["dns"]["servers"] == ["192.168.1.123", "8.8.8.8"]
+    assert cfg["dns"]["queryStrategy"] == "UseIPv4"
+
+    # Custom GATEWAY_DNS_SERVER
+    monkeypatch.setenv("GATEWAY_DNS_SERVER", "1.1.1.1")
+    cfg2 = mod.compose_config(_source_config())
+    assert cfg2["dns"]["servers"] == ["1.1.1.1", "8.8.8.8"]
+
+    # Custom XRAY_DNS_SERVERS
+    monkeypatch.setenv("XRAY_DNS_SERVERS", "9.9.9.9, 149.112.112.112")
+    cfg3 = mod.compose_config(_source_config())
+    assert cfg3["dns"]["servers"] == ["9.9.9.9", "149.112.112.112"]
+
