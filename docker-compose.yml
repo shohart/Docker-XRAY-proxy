@@ -1,3 +1,9 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   xray:
     image: ${XRAY_IMAGE:-ghcr.io/xtls/xray-core:latest}
@@ -14,29 +20,46 @@ services:
       - ./config:/etc/xray
       - ./data:/var/log/xray
     command: ["run", "-c", "/etc/xray/config.json"]
+    # Guard against the upstream Xray memory-leak (balancer+observatory):
+    # cap the container so a runaway heap OOM-restarts instead of eating RAM,
+    # and force the Go runtime to GC earlier.
+    mem_limit: 4g
+    # memswap_limit == mem_limit disables swap for the container (cgroup v2
+    # ignores mem_swappiness), so a runaway heap really OOM-restarts instead
+    # of thrashing in swap at the limit.
+    memswap_limit: 4g
+    mem_swappiness: 0
+    environment:
+      GOMEMLIMIT: "3GiB"
+      GOGC: "50"
+    logging: *default-logging
 
   gateway:
-    image: alpine:3.20
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    image: xray-gateway:latest
     container_name: xray-gateway
     restart: unless-stopped
     network_mode: "host"
     cap_add:
       - NET_ADMIN
+      - NET_RAW
+    init: true
+    stop_grace_period: 10s
     volumes:
       - ./scripts:/scripts:ro
     env_file:
       - .env
-    entrypoint:
-      - /bin/sh
-      - -ec
-      - |
-        apk add --no-cache iptables iproute2 >/dev/null
-        /bin/sh /scripts/gateway_iptables.sh
-        tail -f /dev/null
+    logging: *default-logging
 
   openvpn:
     image: alpine:3.20
     container_name: xray-openvpn
+    # Opt-in: the VPN server (195.66.87.175) is unreachable, so the tunnel is
+    # disabled until a new .ovpn arrives. Re-enable with
+    # `docker compose --profile openvpn up -d` + OPENVPN_FALLBACK_ENABLED=1.
+    profiles: ["openvpn"]
     restart: unless-stopped
     # Bridge network on purpose: redirect-gateway inside must NOT hijack the
     # host's default route. xray (host net) reaches the SOCKS proxy via the
@@ -69,6 +92,7 @@ services:
       timeout: 12s
       start_period: 40s
       retries: 3
+    logging: *default-logging
 
   updater:
     image: python:3.12-alpine
@@ -93,3 +117,4 @@ services:
         done
     env_file:
       - .env
+    logging: *default-logging

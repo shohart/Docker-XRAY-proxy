@@ -33,6 +33,16 @@ def test_dockerfile_exists():
     except Exception as e:
         raise AssertionError(f"Failed to read Dockerfile: {e}")
 
+def test_gateway_dockerfile_exists():
+    """Test that Dockerfile.gateway exists and has required dependencies"""
+    dockerfile_path = 'Dockerfile.gateway'
+    assert os.path.exists(dockerfile_path), f"Dockerfile.gateway does not exist at {dockerfile_path}"
+    with open(dockerfile_path, 'r') as f:
+        content = f.read()
+    assert 'iptables' in content
+    assert 'iproute2' in content
+    assert 'ENTRYPOINT' in content
+
 def test_docker_compose_valid():
     """Test that docker-compose.yml is valid and can be parsed"""
     compose_path = 'docker-compose.yml'

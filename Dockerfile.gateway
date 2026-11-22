@@ -1,0 +1,8 @@
+FROM alpine:3.20
+
+RUN apk add --no-cache iptables ip6tables iproute2 bash
+
+COPY scripts/gateway_iptables.sh /scripts/gateway_iptables.sh
+RUN chmod +x /scripts/gateway_iptables.sh
+
+ENTRYPOINT ["/bin/sh", "/scripts/gateway_iptables.sh"]

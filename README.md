@@ -72,6 +72,9 @@ Variables:
 - `LAN_CIDR`: LAN subnet used for transparent gateway matching
 - `GATEWAY_MODE`: `1` enables transparent gateway and firewall rules, `0` disables
 - `GATEWAY_TPROXY_PORT`: local transparent inbound port (must match Xray config)
+- `GATEWAY_DNS_SERVER`: trusted LAN DNS server (e.g. Technitium DNS at `192.168.1.123`) to avoid poisoned provider DNS
+- `GATEWAY_REDIRECT_DNS`: `1` redirects LAN DNS (port 53 UDP/TCP) with hairpin NAT to `GATEWAY_DNS_SERVER`, `0` leaves DNS unredirected
+- `GATEWAY_BLOCK_QUIC`: `1` drops UDP 443 (QUIC) so clients instantly fall back to HTTP/2 over TLS (prevents stalls over VLESS/DPI)
 - `BYPASS_DOMAINS`: exact domains that should go `direct`
 - `BYPASS_DOMAIN_ZONES`: domain suffixes/zones that should go `direct`
 - `BYPASS_IP_CIDRS`: CIDR ranges that should go `direct`

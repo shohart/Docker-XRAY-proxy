@@ -69,3 +69,7 @@ docker-compose.override.yml
 tmp/
 temp/
 *.tmp
+
+# Updater per-source cache (contains subscription node credentials)
+config/sub-cache/
+config/config.last.json
