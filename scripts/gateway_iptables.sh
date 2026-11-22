@@ -91,11 +91,12 @@ apply_sysctls() {
     [ -w "$f" ] && echo 0 > "$f" 2>/dev/null || true
   done
 
-  # CRITICAL: Enable src_valid_mark on all interfaces.
-  # Required by Linux kernel policy routing table lookup (fwmark 0x1 lookup 100)
-  # during TPROXY to validate the incoming packet's route under rp_filter.
+  # CRITICAL: Disable src_valid_mark on all interfaces.
+  # If src_valid_mark=1, the kernel's reverse-path source validation (fib_validate_source)
+  # leaks fwmark into the reverse lookup, hitting table 100 (local 0.0.0.0/0 dev lo)
+  # and dropping incoming client packets as "IPv4: martian source". Disabling it is mandatory.
   for f in /proc/sys/net/ipv4/conf/*/src_valid_mark; do
-    [ -w "$f" ] && echo 1 > "$f" 2>/dev/null || true
+    [ -w "$f" ] && echo 0 > "$f" 2>/dev/null || true
   done
 
   # Ensure rp_filter is not set to strict (1) which drops TPROXY-marked packets
