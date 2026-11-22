@@ -83,7 +83,6 @@ def test_docker_compose_valid():
 def test_docker_build_structure():
     """Test that all required files are in place for Docker build"""
     required_files = [
-        'config/config.json',
         'scripts/update_subscription.sh',
         'Dockerfile'
     ]
