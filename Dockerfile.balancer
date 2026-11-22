@@ -1,0 +1,8 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+WORKDIR /scripts
+
+RUN pip install --no-cache-dir grpcio protobuf
+
+CMD ["python3", "/scripts/sticky_balancer.py"]

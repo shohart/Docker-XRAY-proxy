@@ -119,3 +119,20 @@ services:
     env_file:
       - .env
     logging: *default-logging
+
+  balancer:
+    build:
+      context: .
+      dockerfile: Dockerfile.balancer
+    image: xray-smart-balancer:latest
+    container_name: xray-smart-balancer
+    restart: unless-stopped
+    network_mode: "host"
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./data:/var/log/xray
+    env_file:
+      - .env
+    depends_on:
+      - xray
+    logging: *default-logging

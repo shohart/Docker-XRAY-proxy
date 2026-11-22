@@ -12,6 +12,7 @@ Project runs `xray-core` in Docker and supports:
 ## Services
 
 - `xray`: main proxy engine
+- `balancer`: smart sticky balancer daemon with anti-flapping hysteresis and daily 06:00 AM rotation
 - `updater`: downloads subscription and builds final local config with enforced gateway/routing policy
 - `gateway`: applies host `iptables` rules for transparent mode and fail-closed forwarding
 
@@ -26,6 +27,13 @@ Project runs `xray-core` in Docker and supports:
    - if subscription has multiple proxy outbounds, `proxy-auto` balancer is added and used as default route
    - `observatory` is enabled to continuously probe all proxy outbounds and keep health state fresh
    - default balancer strategy is `random`, so client requests are spread randomly across healthy nodes
+1. `balancer` service runs the Smart Sticky Balancer daemon:
+   - Pins traffic to an active "sticky node" via Xray API override to prevent IP flapping.
+   - Monitors observatory metrics via gRPC (`127.0.0.1:10085`).
+   - Fails over immediately only when the active node is dead (`consecutive_failures >= 2`).
+   - Hysteresis: ignores small latency fluctuations; switches only if an alternative node is substantially better (>= 50% faster, >= 100ms delta) for multiple checks.
+   - Smoothly rotates to the best available node once a day at a randomized time around 6:00 AM (05:30 - 06:30).
+   - Check status anytime via `scripts/tunnelctl status`.
 1. In `GATEWAY_MODE=1`, `gateway` service installs `iptables` rules:
    - transparently intercept LAN traffic with `TPROXY` (TCP+UDP)
    - install `ip rule` + routing table for marked packets (`local 0.0.0.0/0 dev lo`)

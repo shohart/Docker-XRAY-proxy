@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""
+tunnelctl — manual control for the xray-proxy stack.
+
+Requires: XRAY_API_ENABLED=1 in .env (API on 127.0.0.1:10085).
+Runs on the host; uses `docker exec xray xray api ...` under the hood.
+
+Usage:
+    tunnelctl status              Show balancer state + override
+    tunnelctl use ovpn            Pin balancer to openvpn-out
+    tunnelctl use node2           Pin balancer to node2
+    tunnelctl use auto            Clear override (back to leastPing)
+    tunnelctl lsrules             List routing rules
+"""
+
+import subprocess
+import sys
+import os
+import json
+from pathlib import Path
+
+API_SERVER = os.getenv("XRAY_API_SERVER", "127.0.0.1:10085")
+BALANCER_TAG = os.getenv("XRAY_BALANCER_TAG", "proxy-auto")
+OVPN_TAG = os.getenv("OPENVPN_OUT_TAG", "openvpn-out")
+
+STATE_FILE = Path("/var/log/xray/sticky_state.json")
+if not STATE_FILE.exists():
+    STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "sticky_state.json"
+
+
+def _run(*args: str) -> str:
+    if len(args) >= 2:
+        cmd = ["docker", "exec", "xray", "xray", "api",
+               args[0], f"--server={API_SERVER}", *args[1:]]
+    elif len(args) == 1:
+        cmd = ["docker", "exec", "xray", "xray", "api",
+               args[0], f"--server={API_SERVER}"]
+    else:
+        raise ValueError("at least one arg required")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    return result.stdout
+
+
+def cmd_status() -> None:
+    """Show current balancer state, sticky status, and override."""
+    out = _run("bi", BALANCER_TAG)
+    print(f"=== Xray Balancer: {BALANCER_TAG} ===")
+    print(out.strip())
+
+    override_node = None
+    lines = out.strip().split("\n")
+    for line in lines:
+        if "Override" in line or "Selecting" in line or "Selects" in line:
+            continue
+        stripped = line.strip()
+        if stripped and stripped not in ("1",):
+            override_node = stripped
+            break
+
+    print("\n=== Sticky Balancer Daemon Status ===")
+    if STATE_FILE.exists():
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                st = json.load(f)
+            print(f"  Active Sticky Node:    {st.get('active_node', '<unknown>')}")
+            print(f"  Latency (RTT):         {st.get('active_delay_ms', 0)} ms")
+            print(f"  Last Switch Time:      {st.get('last_switch_time', '<none>')}")
+            print(f"  Last Switch Reason:    {st.get('last_switch_reason', '<none>')}")
+            print(f"  Next Daily Rotation:   {st.get('next_daily_rotation', '<none>')} (~06:00 AM)")
+            print(f"  Manual Override:       {st.get('manual_override', False)}")
+            print(f"  Daemon Heartbeat:      {st.get('updated_at', '<none>')}")
+        except Exception as e:
+            print(f"  (Could not read {STATE_FILE}: {e})")
+    else:
+        print("  (Sticky state file not found yet; daemon initializing)")
+
+    if override_node:
+        print(f"\n  → Current effective outbound: {override_node}")
+
+
+def cmd_use(target: str) -> None:
+    """Override balancer to a specific outbound, or 'auto' to clear."""
+    if target == "auto":
+        _run("bo", "-b", BALANCER_TAG, "-r")
+        print(f"Override cleared. {BALANCER_TAG} back to automatic strategy.")
+    else:
+        _run("bo", "-b", BALANCER_TAG, target)
+        print(f"Override set: {BALANCER_TAG} → {target}")
+
+
+def cmd_lsrules() -> None:
+    """List routing rules."""
+    out = _run("lsrules")
+    print(out.strip())
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print("Usage: tunnelctl <command> [args]")
+        print()
+        print("Commands:")
+        print("  status              Show balancer state and override")
+        print(f"  use <tag|auto>      Pin balancer to <tag>, or 'auto' to clear")
+        print(f"  use ovpn            Shortcut for 'use {OVPN_TAG}'")
+        print("  lsrules             List routing rules")
+        sys.exit(1)
+
+    cmd = sys.argv[1].lower()
+
+    if cmd == "status":
+        cmd_status()
+    elif cmd == "use":
+        if len(sys.argv) < 3:
+            print("Usage: tunnelctl use <tag|auto>")
+            sys.exit(1)
+        target = sys.argv[2]
+        if target == "ovpn":
+            target = OVPN_TAG
+        cmd_use(target)
+    elif cmd == "lsrules":
+        cmd_lsrules()
+    else:
+        print(f"Unknown command: {cmd}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
