@@ -77,6 +77,39 @@ collect_bypass_cidrs() {
   echo "$out"
 }
 
+apply_sysctls() {
+  log "INFO Configuring kernel sysctls for transparent gateway routing..."
+  if [ -w /proc/sys/net/ipv4/ip_forward ]; then
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+  fi
+
+  # CRITICAL: Disable ICMP redirects on all interfaces.
+  # When a client uses this host as default gateway and accesses external IPs
+  # whose route goes back out the same LAN interface, the Linux kernel generates
+  # ICMP Redirects telling the client to bypass this host. Disabling this is mandatory.
+  for f in /proc/sys/net/ipv4/conf/*/send_redirects; do
+    [ -w "$f" ] && echo 0 > "$f" 2>/dev/null || true
+  done
+
+  # CRITICAL: Enable src_valid_mark on all interfaces.
+  # Required by Linux kernel policy routing table lookup (fwmark 0x1 lookup 100)
+  # during TPROXY to validate the incoming packet's route under rp_filter.
+  for f in /proc/sys/net/ipv4/conf/*/src_valid_mark; do
+    [ -w "$f" ] && echo 1 > "$f" 2>/dev/null || true
+  done
+
+  # Ensure rp_filter is not set to strict (1) which drops TPROXY-marked packets
+  for f in /proc/sys/net/ipv4/conf/*/rp_filter; do
+    if [ -w "$f" ]; then
+      val="$(cat "$f" 2>/dev/null || echo 0)"
+      if [ "$val" = "1" ]; then
+        echo 2 > "$f" 2>/dev/null || true
+      fi
+    fi
+  done
+  log "INFO Kernel sysctls successfully configured"
+}
+
 cleanup() {
   log "INFO Caught shutdown signal or cleanup requested; tearing down gateway firewall rules..."
 
@@ -97,6 +130,14 @@ cleanup() {
   # Remove direct LAN outbound masquerade
   if [ -n "$LAN_CIDR" ]; then
     iptables -t nat -D POSTROUTING -s "$LAN_CIDR" ! -d "$LAN_CIDR" -j MASQUERADE 2>/dev/null || true
+  fi
+
+  # Remove legacy NAT redirection rules if present
+  if [ -n "$LAN_CIDR" ]; then
+    iptables -t nat -D PREROUTING -s "$LAN_CIDR" -p tcp -j XRAY_GW 2>/dev/null || true
+    iptables -t nat -D PREROUTING -s "$LAN_CIDR" -j XRAY_GW 2>/dev/null || true
+    iptables -t nat -F XRAY_GW 2>/dev/null || true
+    iptables -t nat -X XRAY_GW 2>/dev/null || true
   fi
 
   # Flush and delete custom chains
@@ -126,6 +167,15 @@ if [ -z "$LAN_CIDR" ]; then
 fi
 
 BYPASS_CIDRS="$(collect_bypass_cidrs)"
+
+# Apply required kernel sysctls (send_redirects=0, src_valid_mark=1, ip_forward=1)
+apply_sysctls
+
+# Remove any legacy NAT interception rules from older versions
+iptables -t nat -D PREROUTING -s "$LAN_CIDR" -p tcp -j XRAY_GW 2>/dev/null || true
+iptables -t nat -D PREROUTING -s "$LAN_CIDR" -j XRAY_GW 2>/dev/null || true
+iptables -t nat -F XRAY_GW 2>/dev/null || true
+iptables -t nat -X XRAY_GW 2>/dev/null || true
 
 # Create custom chains if not exist, and always flush to guarantee idempotency
 iptables -t mangle -N XRAY_GW 2>/dev/null || true
