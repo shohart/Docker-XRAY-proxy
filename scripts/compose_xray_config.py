@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
+import copy
 import ipaddress
 import json
 import os
 import sys
 import urllib.parse
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tunnel_lib  # noqa: E402  (shared with tunnelctl / sticky balancer)
+
+# Control file managed by `tunnelctl` (per-client pins etc.). Lives next to
+# config.json so the updater bakes current pins into every regenerated config.
+POLICY_FILE = os.getenv("TUNNEL_POLICY_FILE", "/etc/xray/tunnel_policy.json")
 
 
 LOCAL_IP_RANGES = [
@@ -428,17 +437,34 @@ def build_dns(src_dns: dict | None = None) -> dict:
     }
 
 
-def compose_config(src: dict) -> dict:
+def load_policy_safe() -> dict:
+    try:
+        return tunnel_lib.load_policy(POLICY_FILE)
+    except Exception as exc:  # a broken control file must never block config updates
+        print(f"compose_xray_config.py: ignoring unreadable {POLICY_FILE}: {exc}", file=sys.stderr)
+        return tunnel_lib.default_policy()
+
+
+def compose_config(src: dict, policy: dict | None = None) -> dict:
+    return compose_config_with_meta(src, policy)[0]
+
+
+def compose_config_with_meta(src: dict, policy: dict | None = None) -> tuple[dict, dict]:
+    """Build the final config plus the nodes_meta sidecar (names/countries per tag)."""
     outbounds = src.get("outbounds")
     if not isinstance(outbounds, list) or not outbounds:
         raise ValueError("Source config has no outbounds")
+    if policy is None:
+        policy = load_policy_safe()
 
-    outbounds = list(outbounds)
+    outbounds = copy.deepcopy(list(outbounds))
     openvpn_outbound = build_openvpn_outbound()
     if openvpn_outbound is not None:
         outbounds.append(openvpn_outbound)
 
     prepared_outbounds = reorder_outbounds(ensure_direct_block(outbounds))
+    nodes_meta = tunnel_lib.build_nodes_meta(prepared_outbounds, policy.get("country_overrides"))
+    tunnel_lib.strip_meta(prepared_outbounds)  # xray must never see the sidecar keys
     vless_tags, all_proxy_tags, ovpn_tag = extract_proxy_tags(prepared_outbounds)
 
     # The balancer picks only among VLESS nodes; OVPN is NOT in the selector
@@ -467,7 +493,7 @@ def compose_config(src: dict) -> dict:
             "services": ["RoutingService", "ObservatoryService"],
         }
 
-    return config
+    return config, nodes_meta
 
 
 def main() -> int:
@@ -480,10 +506,15 @@ def main() -> int:
     try:
         with open(src_path, "r", encoding="utf-8") as f:
             src = json.load(f)
-        out = compose_config(src)
+        out, meta = compose_config_with_meta(src)
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(out, f, ensure_ascii=False, indent=2)
             f.write("\n")
+        meta_path = os.getenv("NODES_META_OUT", "").strip()
+        if meta_path:
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+                f.write("\n")
         return 0
     except Exception as exc:
         print(f"compose_xray_config.py error: {exc}", file=sys.stderr)

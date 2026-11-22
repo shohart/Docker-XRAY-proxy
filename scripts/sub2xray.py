@@ -24,6 +24,14 @@ import sys
 import urllib.parse
 import urllib.request
 
+try:  # node remarks -> country detection (same /scripts dir)
+    from tunnel_lib import META_KEY, remark_specificity
+except Exception:  # pragma: no cover - keep the parser usable standalone
+    META_KEY = "_meta"
+
+    def remark_specificity(name: str) -> int:
+        return 1 if name else 0
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -157,7 +165,13 @@ def outbound_from_link(link: str, tag: str) -> dict | None:
     """Convert a single vless:// link to an xray outbound dict. Others skipped."""
     ll = link.lower()
     if ll.startswith("vless://"):
-        return vless_to_outbound(parse_vless(link), tag)
+        node = parse_vless(link)
+        ob = vless_to_outbound(node, tag)
+        if node.get("name"):
+            # Provider remark (usually "🇳🇱 Netherlands 1") -> nodes_meta.json.
+            # Stripped by compose_xray_config.py before the config is written.
+            ob[META_KEY] = {"name": node["name"]}
+        return ob
     # vmess/trojan/ss/ssr — delegate to html2xray.py logic (imported here to avoid duplication)
     # For now, only vless is fully supported; others can be added as needed.
     return None
@@ -168,9 +182,11 @@ def outbound_from_link(link: str, tag: str) -> dict | None:
 
 def extract_vless_from_json_configs(configs: list[dict]) -> list[dict]:
     """Extract VLESS outbounds from a list of full xray config objects."""
-    seen = set()
+    seen: dict = {}
     outbounds = []
     for cfg in configs:
+        remark = str(cfg.get("remarks") or cfg.get("remark") or cfg.get("name") or "").strip()
+        n_vless = sum(1 for o in cfg.get("outbounds", []) if o.get("protocol") == "vless")
         for ob in cfg.get("outbounds", []):
             if ob.get("protocol") != "vless":
                 continue
@@ -185,9 +201,14 @@ def extract_vless_from_json_configs(configs: list[dict]) -> list[dict]:
                 continue
             uid = users[0].get("id", "")
             key = (addr, port, uid)
+            # Rank remarks: single-node configs named after a country win over
+            # aggregate ones ("🚀 AUTO #1", "GhostLine Auto") seen first.
+            rank = (remark_specificity(remark), 1 if n_vless == 1 else 0)
             if key in seen:
+                prev = seen[key]
+                if rank > prev[META_KEY]["_rank"]:
+                    prev[META_KEY].update({"name": remark, "_rank": rank})
                 continue
-            seen.add(key)
 
             tag = f"node_{len(outbounds)+1}"
             clean = {
@@ -201,7 +222,11 @@ def extract_vless_from_json_configs(configs: list[dict]) -> list[dict]:
             flow = users[0].get("flow", "")
             if flow:
                 clean["settings"]["vnext"][0]["users"][0]["flow"] = flow
+            clean[META_KEY] = {"name": remark, "orig_tag": ob.get("tag", ""), "_rank": rank}
+            seen[key] = clean
             outbounds.append(clean)
+    for ob in outbounds:
+        ob[META_KEY].pop("_rank", None)
     return outbounds
 
 # ---------------------------------------------------------------------------

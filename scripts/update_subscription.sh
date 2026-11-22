@@ -224,7 +224,7 @@ all_outbounds = []
 seen_tags = set()
 seen_keys = set()  # (address, port, id) for dedup
 
-for src_path in sources:
+for src_idx, src_path in enumerate(sources, 1):
     try:
         cfg = json.load(open(src_path))
     except Exception:
@@ -233,6 +233,8 @@ for src_path in sources:
         proto = ob.get('protocol', '')
         if proto in ('freedom', 'blackhole'):
             continue
+        # provenance for nodes_meta.json (stripped again by compose)
+        ob.setdefault('_meta', {})['source'] = src_idx
         tag = ob.get('tag', '')
         # Dedup by (address, port, id)
         vnext = ob.get('settings', {}).get('vnext', [{}])
@@ -295,7 +297,8 @@ if ! jq -e '.outbounds' "$SOURCE" >/dev/null 2>&1; then
 fi
 
 # Compose final config with local gateway/routing/balancer/ovpn policy
-if ! python3 /scripts/compose_xray_config.py "$SOURCE" "$FINAL_CONFIG"; then
+META_NEW="/tmp/nodes_meta.new.json"
+if ! NODES_META_OUT="$META_NEW" python3 /scripts/compose_xray_config.py "$SOURCE" "$FINAL_CONFIG"; then
   log "ERROR Failed to compose final config; keep current config"
   exit 1
 fi
@@ -314,6 +317,12 @@ if [ "$PRIMARY_LOST" -eq 1 ] && [ "$new_nodes" -lt "$old_nodes" ]; then
   rm -f "$FINAL_CONFIG" /tmp/sub_src_*.json /tmp/sub_merged.json 2>/dev/null || true
   log "WARN Primary source failed without cache and node count would drop $old_nodes -> $new_nodes; keep current config"
   exit 1
+fi
+
+# Node names/countries sidecar for tunnelctl + sticky balancer. Not watched by
+# the restart timer, so refreshing it never bounces xray.
+if [ -s "$META_NEW" ]; then
+  mv -f "$META_NEW" /etc/xray/nodes_meta.json 2>/dev/null || true
 fi
 
 # Atomic replace if changed
