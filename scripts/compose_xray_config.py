@@ -493,6 +493,12 @@ def compose_config_with_meta(src: dict, policy: dict | None = None) -> tuple[dic
             "services": ["RoutingService", "ObservatoryService"],
         }
 
+    # Per-client pins (tunnelctl pin): one balancer + source rule per client,
+    # placed before the catch-all rule. The sticky balancer daemon steers them.
+    if config["routing"].get("balancers"):
+        config["routing"] = tunnel_lib.apply_client_pins(
+            config["routing"], tunnel_lib.pinned_ips(policy))
+
     return config, nodes_meta
 
 

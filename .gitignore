@@ -73,3 +73,10 @@ temp/
 # Updater per-source cache (contains subscription node credentials)
 config/sub-cache/
 config/config.last.json
+
+# tunnelctl / sticky balancer runtime files
+config/nodes_meta.json
+config/routing.live.json
+config/tunnel_policy.json
+config/.policy.*
+data/sticky_state.json

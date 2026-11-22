@@ -167,3 +167,26 @@ def test_build_nodes_meta_and_strip():
     assert all("_meta" not in o for o in obs)
     json.dumps(meta, ensure_ascii=False)
 
+
+# --------------------------------------------------------------------- compose integration
+def test_compose_bakes_pins_and_strips_meta(monkeypatch):
+    import importlib.util
+    for k in [k for k in __import__("os").environ if k.startswith(("XRAY_", "OPENVPN_", "GATEWAY_"))]:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("XRAY_BALANCER_STRATEGY", "leastPing")
+    spec = importlib.util.spec_from_file_location("compose_xray_config", REPO_ROOT / "scripts" / "compose_xray_config.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    vless = lambda tag, name: {"tag": tag, "protocol": "vless", "_meta": {"name": name},  # noqa: E731
+                               "settings": {"vnext": [{"address": f"{tag}.example", "port": 443,
+                                                       "users": [{"id": "x"}]}]}}
+    src = {"outbounds": [vless("node_1", "🇳🇱 Netherlands 1"), vless("node_2", "🇩🇪 Germany 8")]}
+    pol = tl.default_policy()
+    pol["clients"]["192.168.1.50"] = tl.default_lane()
+    cfg, meta = mod.compose_config_with_meta(src, pol)
+    assert all("_meta" not in o for o in cfg["outbounds"])
+    assert "_meta" in src["outbounds"][0]                      # source not mutated
+    assert meta["nodes"]["node_2"]["country"] == "DE"
+    assert any(r.get("ruleTag") == "pin-192.168.1.50" for r in cfg["routing"]["rules"])
+    assert cfg["routing"]["rules"][-1].get("balancerTag") == "proxy-auto"
+    assert {b["tag"] for b in cfg["routing"]["balancers"]} == {"proxy-auto", "client-192_168_1_50"}

@@ -1,130 +1,906 @@
 #!/usr/bin/env python3
 """
-tunnelctl — manual control for the xray-proxy stack.
+tunnelctl — control panel for the xray-proxy stack (CLI + curses TUI).
 
-Requires: XRAY_API_ENABLED=1 in .env (API on 127.0.0.1:10085).
-Runs on the host; uses `docker exec xray xray api ...` under the hood.
+Runs on the host. Talks to xray via `docker exec xray xray api ...`, reads the
+sticky balancer's state (data/sticky_state.json: node latencies, lanes) and
+writes the control file config/tunnel_policy.json, which the balancer daemon
+watches and enforces within a second.
 
-Usage:
-    tunnelctl status              Show balancer state + override
-    tunnelctl use ovpn            Pin balancer to openvpn-out
-    tunnelctl use node2           Pin balancer to node2
-    tunnelctl use auto            Clear override (back to leastPing)
-    tunnelctl lsrules             List routing rules
+Nodes
+    tunnelctl nodes [-c NL,DE] [--alive]     List nodes with country flags + latency
+    tunnelctl use <tag|ovpn>                 Pin all traffic to a node (manual mode)
+    tunnelctl use -c NL                      Pin to the best alive node in a country
+    tunnelctl next [-c NL]                   Switch to the next available node (opt. in country)
+    tunnelctl auto                           Back to automatic sticky selection
+    tunnelctl rotate                         Rotate now (according to the rotation strategy)
+
+Rules (global, or per client with --client IP)
+    tunnelctl policy                         Show the whole policy
+    tunnelctl policy all                     Rotate across all countries
+    tunnelctl policy only NL DE              Rotate ONLY across these countries
+    tunnelctl policy except RU               Rotate across all countries EXCEPT these
+    tunnelctl rotation daily|daily@5|6h|30m|off [-s best|next|random]
+    tunnelctl country <tag> <CC|auto>        Fix a node's country if autodetect is wrong
+
+Clients
+    tunnelctl clients [--since 15m] [--all]  Active LAN clients (from xray access log)
+    tunnelctl pin <ip> <tag>                 Pin a client to a node
+    tunnelctl pin <ip> -c NL [-c DE]         Pin a client to a country (sticky + failover inside it)
+    tunnelctl pin <ip> auto                  Own sticky lane for the client, global rules
+    tunnelctl unpin <ip>                     Back to the shared global lane
+    tunnelctl alias <ip> <name>              Friendly name for a client
+    tunnelctl apply [--persist]              Push client routing to running xray (auto after pin/unpin)
+    tunnelctl reconcile                      Re-apply pins if xray lost them (cron-friendly)
+
+Other
+    tunnelctl status | lsrules | tui
 """
 
+from __future__ import annotations
+
+import argparse
+import concurrent.futures as cf
+import datetime as dt
+import json
+import os
+import re
+import socket
 import subprocess
 import sys
-import os
-import json
+import threading
+import time
+import unicodedata
 from pathlib import Path
 
+SCRIPTS_DIR = Path(os.path.realpath(__file__)).parent
+sys.path.insert(0, str(SCRIPTS_DIR))
+import tunnel_lib as tl  # noqa: E402
+
+REPO = SCRIPTS_DIR.parent
 API_SERVER = os.getenv("XRAY_API_SERVER", "127.0.0.1:10085")
 BALANCER_TAG = os.getenv("XRAY_BALANCER_TAG", "proxy-auto")
 OVPN_TAG = os.getenv("OPENVPN_OUT_TAG", "openvpn-out")
+XRAY_CONTAINER = os.getenv("XRAY_CONTAINER", "xray")
+
+CONFIG_DIR = Path(os.getenv("TUNNELCTL_CONFIG_DIR", REPO / "config"))
+POLICY_FILE = CONFIG_DIR / "tunnel_policy.json"
+META_FILE = CONFIG_DIR / "nodes_meta.json"
+XRAY_CONFIG = CONFIG_DIR / "config.json"
+LIVE_ROUTING = CONFIG_DIR / "routing.live.json"   # seen by xray as /etc/xray/routing.live.json
+CONTAINER_CONFIG_DIR = "/etc/xray"
 
 STATE_FILE = Path("/var/log/xray/sticky_state.json")
 if not STATE_FILE.exists():
-    STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "sticky_state.json"
+    STATE_FILE = REPO / "data" / "sticky_state.json"
+
+ASCII = False  # --ascii: no flag emoji
 
 
-def _run(*args: str) -> str:
-    if len(args) >= 2:
-        cmd = ["docker", "exec", "xray", "xray", "api",
-               args[0], f"--server={API_SERVER}", *args[1:]]
-    elif len(args) == 1:
-        cmd = ["docker", "exec", "xray", "xray", "api",
-               args[0], f"--server={API_SERVER}"]
+class TunnelError(RuntimeError):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Xray API
+# ---------------------------------------------------------------------------
+
+def xray_api(cmd: str, *args: str, timeout: int = 10) -> str:
+    full = ["docker", "exec", XRAY_CONTAINER, "xray", "api", cmd, f"--server={API_SERVER}", *args]
+    try:
+        res = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        raise TunnelError("docker not found")
+    except subprocess.TimeoutExpired:
+        raise TunnelError(f"xray api {cmd}: timeout")
+    if res.returncode != 0:
+        raise TunnelError((res.stderr or res.stdout).strip() or f"xray api {cmd} failed")
+    return res.stdout
+
+
+def balancer_override(balancer: str) -> str | None:
+    """Current override of a balancer ('' none, None if the balancer is missing)."""
+    try:
+        out = xray_api("bi", balancer)
+    except TunnelError:
+        return None
+    lines = out.splitlines()
+    for i, ln in enumerate(lines):
+        if "Override" in ln:
+            for nxt in lines[i + 1:]:
+                parts = nxt.split()
+                if len(parts) >= 2 and parts[0].isdigit():
+                    return parts[1]
+                if nxt.strip().startswith("-"):
+                    break
+            return ""
+    return ""
+
+
+def set_override(balancer: str, target: str | None) -> None:
+    if target:
+        xray_api("bo", "-b", balancer, target)
     else:
-        raise ValueError("at least one arg required")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
-    return result.stdout
+        xray_api("bo", "-b", balancer, "-r")
 
 
-def cmd_status() -> None:
-    """Show current balancer state, sticky status, and override."""
-    out = _run("bi", BALANCER_TAG)
-    print(f"=== Xray Balancer: {BALANCER_TAG} ===")
-    print(out.strip())
+# ---------------------------------------------------------------------------
+# Data model
+# ---------------------------------------------------------------------------
 
-    override_node = None
-    lines = out.strip().split("\n")
-    for line in lines:
-        if "Override" in line or "Selecting" in line or "Selects" in line:
-            continue
-        stripped = line.strip()
-        if stripped and stripped not in ("1",):
-            override_node = stripped
-            break
+def read_json(path: Path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except Exception as e:
+        raise TunnelError(f"cannot read {path}: {e}")
 
-    print("\n=== Sticky Balancer Daemon Status ===")
-    if STATE_FILE.exists():
+
+def load_policy() -> dict:
+    try:
+        return tl.load_policy(POLICY_FILE)
+    except Exception as e:
+        raise TunnelError(f"cannot read {POLICY_FILE}: {e}")
+
+
+def save_policy(policy: dict) -> None:
+    try:
+        tl.save_policy(POLICY_FILE, policy)
+    except PermissionError as e:
+        raise TunnelError(f"cannot write {POLICY_FILE}: {e}")
+
+
+class Snapshot:
+    """Everything the CLI/TUI shows, loaded once per refresh."""
+
+    def __init__(self):
+        self.policy = load_policy()
+        self.meta = read_json(META_FILE, {"nodes": {}})
+        self.state = read_json(STATE_FILE, {})
+        self.config = read_json(XRAY_CONFIG, {})
+        routing = self.config.get("routing", {})
+        bal = next((b for b in routing.get("balancers", []) if b.get("tag") == BALANCER_TAG), None)
+        self.order: list[str] = list(bal.get("selector", [])) if bal else []
+        self.fallback = bal.get("fallbackTag") if bal else None
+        self.outbounds = {o.get("tag"): o for o in self.config.get("outbounds", []) if o.get("tag")}
+        if self.fallback and self.fallback in self.outbounds and self.fallback not in ("block", "direct"):
+            self.extra = [self.fallback]
+        else:
+            self.extra = []
+        self.statuses: dict = self.state.get("nodes") or {}
+        self.lanes: dict = self.state.get("lanes") or {}
+        if not self.lanes and self.state.get("active_node"):  # old daemon
+            self.lanes = {tl.MAIN_LANE: {"active_node": self.state["active_node"],
+                                         "active_delay_ms": self.state.get("active_delay_ms", 0),
+                                         "last_switch_reason": self.state.get("last_switch_reason", ""),
+                                         "last_switch_time": self.state.get("last_switch_time", ""),
+                                         "next_rotation": self.state.get("next_daily_rotation")}}
+
+    # -- nodes -------------------------------------------------------------
+    @property
+    def tags(self) -> list[str]:
+        return self.order + [t for t in self.extra if t not in self.order]
+
+    def country(self, tag: str) -> str:
+        return tl.node_country(tag, self.meta, self.policy)
+
+    def name(self, tag: str) -> str:
+        return (self.meta.get("nodes", {}).get(tag) or {}).get("name", "") or ""
+
+    def host(self, tag: str) -> str:
+        m = (self.meta.get("nodes", {}).get(tag) or {})
+        if m.get("host"):
+            return f"{m['host']}:{m.get('port', '')}"
+        ob = self.outbounds.get(tag) or {}
+        h, p = tl.outbound_endpoint(ob)
+        return f"{h}:{p}" if h else ""
+
+    def alive(self, tag: str) -> bool | None:
+        s = self.statuses.get(tag)
+        if s is None:
+            return None
+        return bool(s.get("alive")) and s.get("delay", 0) > 0
+
+    def delay(self, tag: str) -> int | None:
+        s = self.statuses.get(tag)
+        return s.get("delay") if s and s.get("alive") else None
+
+    def countries_map(self) -> dict:
+        return {t: self.country(t) for t in self.tags}
+
+    def lane_users(self, tag: str) -> list[str]:
+        users = []
+        for lid, lane in self.lanes.items():
+            if lane.get("active_node") == tag:
+                users.append("G" if lid == tl.MAIN_LANE else self.client_label(lid.split(":", 1)[1]))
+        return users
+
+    def client_label(self, ip: str) -> str:
+        c = self.policy["clients"].get(ip) or {}
+        return c.get("name") or self.policy["aliases"].get(ip) or ip
+
+    def lane_cfg(self, client: str | None) -> dict:
+        return self.policy["clients"][client] if client else self.policy["global"]
+
+    def active(self, client: str | None = None) -> str:
+        lid = tl.lane_id_for_client(client) if client else tl.MAIN_LANE
+        return (self.lanes.get(lid) or {}).get("active_node", "")
+
+    def daemon_age(self) -> float | None:
+        ts = self.state.get("updated_at")
+        if not ts:
+            return None
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                st = json.load(f)
-            print(f"  Active Sticky Node:    {st.get('active_node', '<unknown>')}")
-            print(f"  Latency (RTT):         {st.get('active_delay_ms', 0)} ms")
-            print(f"  Last Switch Time:      {st.get('last_switch_time', '<none>')}")
-            print(f"  Last Switch Reason:    {st.get('last_switch_reason', '<none>')}")
-            print(f"  Next Daily Rotation:   {st.get('next_daily_rotation', '<none>')} (~06:00 AM)")
-            print(f"  Manual Override:       {st.get('manual_override', False)}")
-            print(f"  Daemon Heartbeat:      {st.get('updated_at', '<none>')}")
-        except Exception as e:
-            print(f"  (Could not read {STATE_FILE}: {e})")
+            t = dt.datetime.fromisoformat(ts)
+        except Exception:
+            return None
+        if t.tzinfo is None:  # old daemon: naive container time (UTC)
+            t = t.replace(tzinfo=dt.timezone.utc)
+        return (dt.datetime.now(dt.timezone.utc) - t).total_seconds()
+
+
+def flag_txt(iso: str) -> str:
+    return iso if ASCII else tl.flag(iso)
+
+
+def fmt_delay(d) -> str:
+    return f"{d}ms" if d else "—"
+
+
+def describe_filter(f: dict) -> str:
+    mode = f.get("mode", "all")
+    cc = f.get("countries") or []
+    if mode == "all" or not cc:
+        return "all countries"
+    joined = " ".join(f"{flag_txt(c)}{'' if ASCII else ' ' + c}" for c in cc)
+    return ("ONLY " if mode == "only" else "EXCEPT ") + joined
+
+
+def describe_lane(cfg: dict) -> str:
+    rot = cfg.get("rotation") or {}
+    head = f"manual → {cfg.get('node')}" if cfg.get("mode") == "manual" else "auto"
+    return (f"{head}; rules: {describe_filter(cfg.get('filter') or {})}; "
+            f"rotation: {rot.get('schedule', 'daily')}/{rot.get('strategy', 'best')}")
+
+
+# ---------------------------------------------------------------------------
+# Actions (shared by CLI and TUI)
+# ---------------------------------------------------------------------------
+
+def _lane_id(client: str | None) -> str:
+    return tl.lane_id_for_client(client) if client else tl.MAIN_LANE
+
+
+def _require_client(policy: dict, client: str | None) -> None:
+    if client and client not in policy["clients"]:
+        raise TunnelError(f"client {client} is not pinned; run `tunnelctl pin {client} auto` first")
+
+
+def resolve_node(snap: Snapshot, spec: str) -> str:
+    if spec == "ovpn":
+        spec = OVPN_TAG
+    if spec in snap.tags or spec in snap.outbounds:
+        return spec
+    # Prefix / case-insensitive / name match convenience
+    low = spec.lower()
+    matches = [t for t in snap.tags if t.lower() == low] or [t for t in snap.tags if low in snap.name(t).lower()]
+    if len(matches) == 1:
+        return matches[0]
+    raise TunnelError(f"unknown node '{spec}'" + (f" (ambiguous: {', '.join(matches[:6])})" if matches else ""))
+
+
+def candidates_in(snap: Snapshot, countries: list[str] | None, cfg: dict | None = None) -> list[str]:
+    cmap = snap.countries_map()
+    if countries:
+        return tl.allowed_tags(snap.tags, {"mode": "only", "countries": countries}, cmap)
+    return tl.allowed_tags(snap.tags, (cfg or {}).get("filter"), cmap)
+
+
+def act_use(node: str | None = None, countries: list[str] | None = None, client: str | None = None) -> str:
+    snap = Snapshot()
+    pol = snap.policy
+    _require_client(pol, client)
+    if node:
+        target = resolve_node(snap, node)
     else:
-        print("  (Sticky state file not found yet; daemon initializing)")
+        cands = candidates_in(snap, countries)
+        target = tl.pick_best(snap.statuses, cands)
+        if not target:
+            raise TunnelError(f"no alive node in {' '.join(countries or [])}")
+    if snap.alive(target) is False:
+        print(f"warning: {target} is currently DEAD; it will be used once it is back "
+              f"(failover keeps traffic flowing meanwhile)", file=sys.stderr)
+    lane = snap.lane_cfg(client)
+    lane["mode"], lane["node"] = "manual", target
+    save_policy(pol)
+    bal = tl.client_balancer_tag(client) if client else BALANCER_TAG
+    if snap.alive(target) is not False:
+        try:
+            set_override(bal, target)
+        except TunnelError:
+            pass  # daemon applies it within a second anyway
+    return target
 
-    if override_node:
-        print(f"\n  → Current effective outbound: {override_node}")
+
+def act_next(countries: list[str] | None = None, client: str | None = None) -> str:
+    snap = Snapshot()
+    _require_client(snap.policy, client)
+    cfg = snap.lane_cfg(client)
+    cands = candidates_in(snap, countries, cfg)
+    # The policy is written synchronously, the daemon state lags a tick: for a
+    # manual lane the pinned node is the truth (so `next; next` really cycles).
+    cur = (cfg.get("node") if cfg.get("mode") == "manual" else None) or snap.active(client)
+    target = tl.pick_next(snap.tags, cur, snap.statuses, cands)
+    if not target:
+        raise TunnelError("no other alive node matches")
+    return act_use(target, client=client)
 
 
-def cmd_use(target: str) -> None:
-    """Override balancer to a specific outbound, or 'auto' to clear."""
-    if target == "auto":
-        _run("bo", "-b", BALANCER_TAG, "-r")
-        print(f"Override cleared. {BALANCER_TAG} back to automatic strategy.")
+def act_auto(client: str | None = None) -> None:
+    pol = load_policy()
+    _require_client(pol, client)
+    lane = pol["clients"][client] if client else pol["global"]
+    lane["mode"], lane["node"] = "auto", None
+    save_policy(pol)
+
+
+def act_rotate(client: str | None = None) -> None:
+    pol = load_policy()
+    _require_client(pol, client)
+    lane = pol["clients"][client] if client else pol["global"]
+    if lane["mode"] == "manual":
+        lane["mode"], lane["node"] = "auto", None
+    pol["rotate_requests"][_lane_id(client)] = dt.datetime.now().isoformat(timespec="seconds")
+    save_policy(pol)
+
+
+def act_filter(mode: str, countries: list[str], client: str | None = None) -> dict:
+    if mode not in tl.FILTER_MODES:
+        raise TunnelError(f"mode must be one of {', '.join(tl.FILTER_MODES)}")
+    countries = tl.parse_country_list(countries)
+    if mode != "all" and not countries:
+        raise TunnelError(f"'{mode}' needs at least one country code")
+    pol = load_policy()
+    _require_client(pol, client)
+    lane = pol["clients"][client] if client else pol["global"]
+    lane["filter"] = {"mode": mode, "countries": countries if mode != "all" else []}
+    save_policy(pol)
+    return lane
+
+
+def act_rotation(schedule: str | None, strategy: str | None, client: str | None = None) -> dict:
+    if schedule:
+        tl.parse_schedule(schedule)  # validate
+    if strategy and strategy not in tl.SELECT_STRATEGIES:
+        raise TunnelError(f"strategy must be one of {', '.join(tl.SELECT_STRATEGIES)}")
+    pol = load_policy()
+    _require_client(pol, client)
+    lane = pol["clients"][client] if client else pol["global"]
+    if schedule:
+        lane["rotation"]["schedule"] = schedule
+    if strategy:
+        lane["rotation"]["strategy"] = strategy
+    save_policy(pol)
+    return lane
+
+
+def act_country(tag: str, iso: str) -> None:
+    snap = Snapshot()
+    tag = resolve_node(snap, tag)
+    pol = snap.policy
+    if iso.lower() == "auto":
+        pol["country_overrides"].pop(tag, None)
     else:
-        _run("bo", "-b", BALANCER_TAG, target)
-        print(f"Override set: {BALANCER_TAG} → {target}")
+        pol["country_overrides"][tag] = tl.parse_country_list([iso])[0]
+    save_policy(pol)
 
 
-def cmd_lsrules() -> None:
-    """List routing rules."""
-    out = _run("lsrules")
-    print(out.strip())
-
-
-def main() -> None:
-    if len(sys.argv) < 2:
-        print("Usage: tunnelctl <command> [args]")
-        print()
-        print("Commands:")
-        print("  status              Show balancer state and override")
-        print(f"  use <tag|auto>      Pin balancer to <tag>, or 'auto' to clear")
-        print(f"  use ovpn            Shortcut for 'use {OVPN_TAG}'")
-        print("  lsrules             List routing rules")
-        sys.exit(1)
-
-    cmd = sys.argv[1].lower()
-
-    if cmd == "status":
-        cmd_status()
-    elif cmd == "use":
-        if len(sys.argv) < 3:
-            print("Usage: tunnelctl use <tag|auto>")
-            sys.exit(1)
-        target = sys.argv[2]
-        if target == "ovpn":
-            target = OVPN_TAG
-        cmd_use(target)
-    elif cmd == "lsrules":
-        cmd_lsrules()
+def act_alias(ip: str, name: str) -> None:
+    pol = load_policy()
+    if name:
+        pol["aliases"][ip] = name
+        if ip in pol["clients"]:
+            pol["clients"][ip]["name"] = name
     else:
-        print(f"Unknown command: {cmd}")
-        sys.exit(1)
+        pol["aliases"].pop(ip, None)
+        if ip in pol["clients"]:
+            pol["clients"][ip].pop("name", None)
+    save_policy(pol)
+
+
+_IP_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
+
+
+def act_pin(ip: str, node: str | None, countries: list[str] | None, name: str | None = None,
+            apply: bool = True) -> str:
+    if not _IP_RE.match(ip):
+        raise TunnelError(f"'{ip}' is not an IPv4 address")
+    snap = Snapshot()
+    if not snap.order:
+        raise TunnelError("no balancer in config.json (single-node setup?) — pins need proxy-auto")
+    pol = snap.policy
+    new = ip not in pol["clients"]
+    lane = pol["clients"].get(ip) or tl.default_lane()
+    lane["filter"] = dict(pol["global"]["filter"]) if new else lane["filter"]
+    lane["rotation"] = dict(pol["global"]["rotation"]) if new else lane["rotation"]
+    if name or pol["aliases"].get(ip):
+        lane["name"] = name or pol["aliases"].get(ip)
+    if node and node != "auto":
+        lane["mode"], lane["node"] = "manual", resolve_node(snap, node)
+        desc = f"node {lane['node']}"
+    elif countries:
+        cc = tl.parse_country_list(countries)
+        lane["mode"], lane["node"] = "auto", None
+        lane["filter"] = {"mode": "only", "countries": cc}
+        if not tl.alive_sorted(snap.statuses, candidates_in(snap, cc)):
+            print(f"warning: no alive node in {' '.join(cc)} right now", file=sys.stderr)
+        desc = "country " + " ".join(cc)
+    else:
+        lane["mode"], lane["node"] = "auto", None
+        desc = "own sticky lane (" + describe_filter(lane["filter"]) + ")"
+    pol["clients"][ip] = lane
+    if apply and new:
+        apply_routing(pol)   # balancer must exist before the daemon sees the new lane
+    save_policy(pol)
+    return desc
+
+
+def act_unpin(ip: str, apply: bool = True) -> None:
+    pol = load_policy()
+    if ip not in pol["clients"]:
+        raise TunnelError(f"{ip} is not pinned")
+    name = pol["clients"][ip].get("name")
+    if name:
+        pol["aliases"].setdefault(ip, name)
+    del pol["clients"][ip]
+    pol["rotate_requests"].pop(tl.lane_id_for_client(ip), None)
+    save_policy(pol)
+    if apply:
+        apply_routing(pol)
+
+
+def apply_routing(policy: dict | None = None, persist: bool = False) -> str:
+    """Hot-swap routing in the running xray: rules + balancers incl. client pins.
+
+    Replace-mode adrules rebuilds every balancer, which drops their overrides,
+    so the current choices are re-issued right after (the daemon would also
+    restore them on its next tick).
+    """
+    policy = policy or load_policy()
+    cfg = read_json(XRAY_CONFIG, None)
+    if not cfg:
+        raise TunnelError(f"{XRAY_CONFIG} missing")
+    routing = tl.apply_client_pins(cfg.get("routing", {}), tl.pinned_ips(policy), BALANCER_TAG)
+    if routing == cfg.get("routing"):
+        live_ok = live_pins_match(policy)
+        if live_ok:
+            return "routing already up to date"
+    state = read_json(STATE_FILE, {})
+    lanes = state.get("lanes") or {}
+    overrides = {BALANCER_TAG: balancer_override(BALANCER_TAG) or (lanes.get(tl.MAIN_LANE) or {}).get("active_node")}
+    for ip in tl.pinned_ips(policy):
+        # Only restore choices the daemon already made; a brand-new client lane
+        # is initialised by the daemon itself (respecting its country rules).
+        lane = lanes.get(tl.lane_id_for_client(ip)) or {}
+        node = policy["clients"][ip].get("node") if policy["clients"][ip].get("mode") == "manual" else None
+        overrides[tl.client_balancer_tag(ip)] = node or lane.get("active_node")
+
+    tmp = LIVE_ROUTING.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"routing": routing}, f, ensure_ascii=False, indent=2)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, LIVE_ROUTING)
+    xray_api("adrules", f"{CONTAINER_CONFIG_DIR}/{LIVE_ROUTING.name}")
+    for bal, node in overrides.items():
+        if node:
+            try:
+                set_override(bal, node)
+            except TunnelError as e:
+                print(f"warning: override {bal} -> {node}: {e}", file=sys.stderr)
+    msg = f"routing applied live ({len(tl.pinned_ips(policy))} pinned client(s))"
+    if persist:
+        cfg["routing"] = routing
+        tmp = XRAY_CONFIG.with_name(".config.json.tunnelctl")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, XRAY_CONFIG)
+        msg += "; config.json updated (the config watcher will restart xray)"
+    return msg
+
+
+def live_pins_match(policy: dict) -> bool:
+    """True if every pinned client has its balancer in the running xray (and nothing extra)."""
+    want = {tl.client_balancer_tag(ip) for ip in tl.pinned_ips(policy)}
+    for b in want:
+        if balancer_override(b) is None:
+            return False
+    try:
+        out = xray_api("lsrules")
+        live = {r.get("ruleTag", "") for r in json.loads(out).get("rules", [])}
+    except Exception:
+        return True
+    live_pins = {t for t in live if t.startswith(tl.PIN_RULE_PREFIX)}
+    return live_pins == {tl.PIN_RULE_PREFIX + ip for ip in tl.pinned_ips(policy)}
+
+
+# ---------------------------------------------------------------------------
+# Clients
+# ---------------------------------------------------------------------------
+
+_rdns_cache: dict[str, str] = {}
+
+
+def reverse_dns(ips: list[str], timeout: float = 1.5) -> dict[str, str]:
+    todo = [ip for ip in ips if ip not in _rdns_cache]
+    if todo:
+        def look(ip):
+            try:
+                return ip, socket.gethostbyaddr(ip)[0].split(".")[0]
+            except Exception:
+                return ip, ""
+        ex = cf.ThreadPoolExecutor(max_workers=16)
+        futs = [ex.submit(look, ip) for ip in todo]
+        try:
+            for fut in cf.as_completed(futs, timeout=timeout):
+                ip, name = fut.result()
+                _rdns_cache[ip] = name
+        except cf.TimeoutError:
+            pass
+        for ip in todo:  # unanswered PTR lookups: don't block every refresh on them again
+            _rdns_cache.setdefault(ip, "")
+        ex.shutdown(wait=False, cancel_futures=True)
+    return {ip: _rdns_cache.get(ip, "") for ip in ips}
+
+
+def parse_since(s: str) -> int:
+    m = re.fullmatch(r"(\d+)\s*([smhd]?)", s.strip())
+    if not m:
+        raise TunnelError(f"bad duration '{s}' (e.g. 30s, 15m, 2h)")
+    return int(m.group(1)) * {"": 60, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def read_access_log(since_sec: int) -> list[str]:
+    try:
+        res = subprocess.run(["docker", "logs", "--since", f"{since_sec}s", XRAY_CONTAINER],
+                             capture_output=True, text=True, timeout=60, errors="replace")
+    except Exception as e:
+        raise TunnelError(f"docker logs: {e}")
+    text = res.stdout + "\n" + res.stderr
+    return [ln for ln in text.splitlines() if " accepted " in ln or " rejected " in ln]
+
+
+def client_rows(snap: Snapshot, tracker: tl.ClientTracker, show_all: bool = False) -> list[dict]:
+    rows = {c["ip"]: c for c in tracker.snapshot()}
+    for ip in list(snap.policy["clients"]) + (list(snap.policy["aliases"]) if show_all else []):
+        rows.setdefault(ip, {"ip": ip, "last_seen": None, "conns": 0, "outbound": "", "top_hosts": [],
+                             "outbounds": {}})
+    names = reverse_dns(list(rows))
+    out = []
+    for ip, c in rows.items():
+        c = dict(c)
+        c["name"] = snap.client_label(ip) if snap.client_label(ip) != ip else names.get(ip, "")
+        c["pin"] = snap.policy["clients"].get(ip)
+        out.append(c)
+    out.sort(key=lambda c: (c["pin"] is None, tl.ip_sort_key(c["ip"])))
+    return out
+
+
+def ago(ts) -> str:
+    if not ts:
+        return "—"
+    sec = (dt.datetime.now(dt.timezone.utc) - ts).total_seconds()
+    if sec < 60:
+        return f"{int(sec)}s"
+    if sec < 3600:
+        return f"{int(sec // 60)}m"
+    return f"{int(sec // 3600)}h"
+
+
+def describe_pin(pin: dict | None) -> str:
+    if not pin:
+        return "global"
+    if pin.get("mode") == "manual":
+        return f"node {pin.get('node')}"
+    f = pin.get("filter") or {}
+    if f.get("mode") == "only" and f.get("countries"):
+        return "country " + ",".join(f["countries"])
+    return "own lane"
+
+
+# ---------------------------------------------------------------------------
+# CLI output
+# ---------------------------------------------------------------------------
+
+def disp_width(s: str) -> int:
+    w = 0
+    for ch in s:
+        o = ord(ch)
+        if unicodedata.combining(ch) or o in (0x200D, 0xFE0F, 0xFE0E):
+            continue
+        if 0x1F1E6 <= o <= 0x1F1FF:
+            w += 1  # half of a flag pair (pair = 2 cells)
+        elif o >= 0x1F000 or unicodedata.east_asian_width(ch) in ("W", "F"):
+            w += 2
+        else:
+            w += 1
+    return w
+
+
+def fit(s: str, width: int) -> str:
+    """Truncate/pad to an exact display width."""
+    out, w = "", 0
+    for ch in s:
+        cw = disp_width(ch)
+        if w + cw > width:
+            if width > 0 and w < width:
+                out += "…" if w + 1 <= width else ""
+                w += 1
+            break
+        out += ch
+        w += cw
+    return out + " " * max(0, width - w)
+
+
+def print_table(headers: list[str], rows: list[list[str]], widths: list[int]) -> None:
+    print("  ".join(fit(h, w) for h, w in zip(headers, widths)).rstrip())
+    for r in rows:
+        print("  ".join(fit(str(c), w) for c, w in zip(r, widths)).rstrip())
+
+
+def cmd_nodes(args) -> None:
+    snap = Snapshot()
+    cc = tl.parse_country_list(args.country) if args.country else None
+    tags = candidates_in(snap, cc) if cc else snap.tags
+    if args.alive:
+        tags = [t for t in tags if snap.alive(t)]
+    if args.sort == "delay":
+        tags = sorted(tags, key=lambda t: snap.delay(t) or 10 ** 9)
+    elif args.sort == "country":
+        tags = sorted(tags, key=lambda t: (snap.country(t), snap.delay(t) or 10 ** 9))
+    if args.json:
+        print(json.dumps([{"tag": t, "country": snap.country(t), "name": snap.name(t), "host": snap.host(t),
+                           "alive": snap.alive(t), "delay": snap.delay(t), "used_by": snap.lane_users(t)}
+                          for t in tags], ensure_ascii=False, indent=2))
+        return
+    allowed = set(candidates_in(snap, None, snap.policy["global"]))
+    rows = []
+    for t in tags:
+        a = snap.alive(t)
+        state = "alive" if a else ("dead" if a is False else "n/a")
+        mark = "▶" if t == snap.active() else ("·" if t not in allowed else " ")
+        rows.append([mark, t, flag_txt(snap.country(t)) if not ASCII else "", snap.country(t),
+                     tl.country_name(snap.country(t)), fmt_delay(snap.delay(t)), state,
+                     ",".join(snap.lane_users(t)), snap.name(t) or snap.host(t)])
+    print_table([" ", "TAG", "" if not ASCII else "", "CC", "COUNTRY", "RTT", "STATE", "USED BY", "NAME / HOST"],
+                rows, [1, 10, 2 if not ASCII else 0, 2, 14, 7, 5, 12, 44])
+    alive = sum(1 for t in tags if snap.alive(t))
+    print(f"\n{alive}/{len(tags)} alive.  ▶ global active   · excluded by global rules ({describe_filter(snap.policy['global']['filter'])})")
+
+
+def cmd_status(args) -> None:
+    snap = Snapshot()
+    age = snap.daemon_age()
+    print("=== Global lane (balancer %s) ===" % BALANCER_TAG)
+    cur = balancer_override(BALANCER_TAG)
+    act = snap.active()
+    print(f"  Effective outbound:  {cur or '(no override — strategy picks)'}"
+          + (f"  {flag_txt(snap.country(cur))} {snap.country(cur)}  {fmt_delay(snap.delay(cur))}" if cur else ""))
+    print(f"  Policy:              {describe_lane(snap.policy['global'])}")
+    lane = snap.lanes.get(tl.MAIN_LANE) or {}
+    print(f"  Daemon active node:  {act or '<unknown>'}")
+    print(f"  Last switch:         {lane.get('last_switch_time') or '—'}  ({lane.get('last_switch_reason') or '—'})")
+    print(f"  Next rotation:       {lane.get('next_rotation') or '—'}")
+    if lane.get("policy_violation"):
+        print(f"  ⚠ {lane['policy_violation']}")
+    if snap.policy["clients"]:
+        print("\n=== Pinned clients ===")
+        for ip, cfg in sorted(snap.policy["clients"].items(), key=lambda kv: tl.ip_sort_key(kv[0])):
+            ln = snap.lanes.get(tl.lane_id_for_client(ip)) or {}
+            node = ln.get("active_node") or "—"
+            st = ln.get("status", "?")
+            print(f"  {ip:15} {fit(snap.client_label(ip), 14)} → {node:9} {flag_txt(snap.country(node)) if node != '—' else '  '} "
+                  f"[{describe_pin(cfg)}; {st}]" + (f"  ⚠ {ln['policy_violation']}" if ln.get("policy_violation") else ""))
+    alive = sum(1 for t in snap.tags if snap.alive(t))
+    print(f"\nNodes: {alive}/{len(snap.tags)} alive.  Daemon heartbeat: "
+          + (f"{int(age)}s ago" if age is not None else "unknown")
+          + ("  ⚠ STALE" if age is not None and age > 90 else ""))
+    if snap.state.get("policy_error"):
+        print(f"⚠ daemon policy error: {snap.state['policy_error']}")
+    if not snap.statuses:
+        print("(no node latencies yet: restart the balancer with the new daemon — see README)")
+
+
+def cmd_clients(args) -> None:
+    snap = Snapshot()
+    tracker = tl.ClientTracker()
+    tracker.feed_many(read_access_log(parse_since(args.since)))
+    rows = client_rows(snap, tracker, args.all)
+    if args.json:
+        print(json.dumps([{k: (v.isoformat() if isinstance(v, dt.datetime) else v) for k, v in r.items()}
+                          for r in rows], ensure_ascii=False, indent=2, default=str))
+        return
+    table = []
+    for r in rows:
+        ob = r.get("outbound") or ""
+        table.append([r["ip"], r.get("name", ""), ago(r.get("last_seen")), str(r.get("conns", 0)),
+                      ob, flag_txt(snap.country(ob)) if ob.startswith("node") else "", describe_pin(r["pin"]),
+                      ", ".join(r.get("top_hosts", [])[:3])])
+    print_table(["IP", "NAME", "SEEN", "CONN", "VIA", "", "PIN", "TOP HOSTS"], table,
+                [15, 16, 5, 5, 10, 2, 16, 50])
+    print(f"\n{len(rows)} client(s) in the last {args.since}.")
+
+
+def cmd_policy(args) -> None:
+    if args.mode:
+        lane = act_filter(args.mode, args.countries, args.client)
+        who = args.client or "global"
+        print(f"{who}: {describe_filter(lane['filter'])}")
+        return
+    pol = load_policy()
+    print(f"global: {describe_lane(pol['global'])}")
+    for ip, cfg in sorted(pol["clients"].items(), key=lambda kv: tl.ip_sort_key(kv[0])):
+        print(f"{ip} ({cfg.get('name') or pol['aliases'].get(ip, '')}): {describe_lane(cfg)}")
+    if pol["country_overrides"]:
+        print("country overrides: " + ", ".join(f"{k}={v}" for k, v in pol["country_overrides"].items()))
+    print(f"\nfile: {POLICY_FILE}")
+
+
+def wait_for_change(client: str | None, old: str, timeout: float = 5.0) -> str:
+    """Wait for the daemon to switch the lane away from `old`; returns the current node."""
+    lid = _lane_id(client)
+    end = time.time() + timeout
+    node = old
+    while time.time() < end:
+        st = read_json(STATE_FILE, {})
+        node = ((st.get("lanes") or {}).get(lid) or {}).get("active_node", "")
+        if node and node != old:
+            return node
+        time.sleep(0.4)
+    return node
+
+
+def main() -> int:
+    global ASCII
+    ap = argparse.ArgumentParser(prog="tunnelctl", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--ascii", action="store_true", help="no flag emoji (ISO codes only)")
+    sub = ap.add_subparsers(dest="cmd")
+
+    sub.add_parser("status", help="global lane, pinned clients, daemon health")
+    p = sub.add_parser("nodes", help="list nodes with countries and latency")
+    p.add_argument("-c", "--country", action="append", help="only these countries (repeat or comma-separate)")
+    p.add_argument("--alive", action="store_true")
+    p.add_argument("--sort", choices=("order", "delay", "country"), default="order")
+    p.add_argument("--json", action="store_true")
+
+    def with_client(p):
+        p.add_argument("--client", metavar="IP", help="act on a pinned client's lane instead of global")
+        return p
+
+    p = with_client(sub.add_parser("use", help="pin to a node (or best of a country)"))
+    p.add_argument("node", nargs="?", help="node tag, 'ovpn', or 'auto'")
+    p.add_argument("-c", "--country", action="append")
+    p = with_client(sub.add_parser("next", help="switch to the next available node"))
+    p.add_argument("-c", "--country", action="append")
+    with_client(sub.add_parser("auto", help="automatic sticky selection"))
+    with_client(sub.add_parser("rotate", help="rotate now"))
+
+    p = with_client(sub.add_parser("policy", help="show/set country rotation rules"))
+    p.add_argument("mode", nargs="?", choices=tl.FILTER_MODES)
+    p.add_argument("countries", nargs="*")
+    p = with_client(sub.add_parser("rotation", help="rotation schedule/strategy"))
+    p.add_argument("schedule", nargs="?", help="off | daily | daily@H | 30m | 6h | 1d")
+    p.add_argument("-s", "--strategy", choices=tl.SELECT_STRATEGIES)
+    p = sub.add_parser("country", help="override a node's country")
+    p.add_argument("tag")
+    p.add_argument("iso", help="ISO code or 'auto'")
+
+    p = sub.add_parser("clients", help="active LAN clients")
+    p.add_argument("--since", default="15m")
+    p.add_argument("--all", action="store_true", help="also show known (aliased) idle clients")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("pin", help="pin a client to a node / country / own lane")
+    p.add_argument("ip")
+    p.add_argument("node", nargs="?", help="node tag or 'auto'")
+    p.add_argument("-c", "--country", action="append")
+    p.add_argument("--name")
+    p.add_argument("--no-apply", action="store_true")
+    p = sub.add_parser("unpin", help="remove a client pin")
+    p.add_argument("ip")
+    p.add_argument("--no-apply", action="store_true")
+    p = sub.add_parser("alias", help="friendly client name ('' removes)")
+    p.add_argument("ip")
+    p.add_argument("name")
+    p = sub.add_parser("apply", help="push routing (client pins) to running xray")
+    p.add_argument("--persist", action="store_true", help="also write config.json (restarts xray)")
+    sub.add_parser("reconcile", help="re-apply pins if the running xray lost them")
+    sub.add_parser("lsrules", help="raw routing rules of running xray")
+    p = sub.add_parser("tui", help="interactive panel")
+
+    args = ap.parse_args()
+    ASCII = args.ascii or os.getenv("TUNNELCTL_ASCII") == "1"
+    if not args.cmd:
+        if sys.stdout.isatty():
+            args.cmd = "tui"
+        else:
+            ap.print_help()
+            return 1
+
+    try:
+        if args.cmd == "status":
+            cmd_status(args)
+        elif args.cmd == "nodes":
+            cmd_nodes(args)
+        elif args.cmd == "use":
+            cc = tl.parse_country_list(args.country) if args.country else None
+            if args.node == "auto":
+                act_auto(args.client)
+                print("Automatic selection" + (f" for {args.client}" if args.client else ""))
+            elif not args.node and not cc:
+                ap.error("use: give a node tag or -c COUNTRY")
+            else:
+                t = act_use(args.node if not cc else None, cc, args.client)
+                print(f"Pinned {args.client or 'global'} → {t}  {flag_txt(Snapshot().country(t))}")
+        elif args.cmd == "next":
+            cc = tl.parse_country_list(args.country) if args.country else None
+            t = act_next(cc, args.client)
+            print(f"{args.client or 'global'} → {t}  {flag_txt(Snapshot().country(t))}  (manual; `tunnelctl auto` to release)")
+        elif args.cmd == "auto":
+            act_auto(args.client)
+            print("Automatic selection" + (f" for {args.client}" if args.client else ""))
+        elif args.cmd == "rotate":
+            node = Snapshot().active(args.client)
+            act_rotate(args.client)
+            new = wait_for_change(args.client, node)
+            if new and new != node:
+                print(f"Rotated {args.client or 'global'}: {node or '?'} → {new}  {flag_txt(Snapshot().country(new))}")
+            else:
+                print(f"Rotation requested ({args.client or 'global'} still on {node or '?'}: "
+                      f"no other allowed alive node, or the daemon has not picked it up yet)")
+        elif args.cmd == "policy":
+            cmd_policy(args)
+        elif args.cmd == "rotation":
+            lane = act_rotation(args.schedule, args.strategy, args.client)
+            print(f"{args.client or 'global'}: rotation {lane['rotation']['schedule']}/{lane['rotation']['strategy']}")
+        elif args.cmd == "country":
+            act_country(args.tag, args.iso)
+            print("ok")
+        elif args.cmd == "clients":
+            cmd_clients(args)
+        elif args.cmd == "pin":
+            desc = act_pin(args.ip, args.node, args.country, args.name, apply=not args.no_apply)
+            print(f"{args.ip} pinned: {desc}")
+        elif args.cmd == "unpin":
+            act_unpin(args.ip, apply=not args.no_apply)
+            print(f"{args.ip} unpinned (back to global lane)")
+        elif args.cmd == "alias":
+            act_alias(args.ip, args.name)
+            print("ok")
+        elif args.cmd == "apply":
+            print(apply_routing(persist=args.persist))
+        elif args.cmd == "reconcile":
+            pol = load_policy()
+            if live_pins_match(pol):
+                print("pins in sync")
+            else:
+                print(apply_routing(pol))
+        elif args.cmd == "lsrules":
+            print(xray_api("lsrules").strip())
+        elif args.cmd == "tui":
+            import tunnel_tui
+            tunnel_tui.run(sys.modules[__name__])
+    except TunnelError as e:
+        print(f"tunnelctl: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"tunnelctl: {e}", file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

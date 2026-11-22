@@ -195,6 +195,49 @@ docker compose restart xray
 
 Use a host-side watcher/timer if automatic restart after config update is required.
 
+## tunnelctl — nodes, clients, rotation rules
+
+`scripts/tunnelctl` is the control panel (CLI + curses TUI, stdlib only). Run it on
+the host; bare `scripts/tunnelctl` in a terminal opens the TUI (`--ascii` disables
+flag emoji).
+
+```sh
+tunnelctl nodes --sort delay          # nodes with 🇳🇱 country, RTT, who uses them
+tunnelctl use node_11 | use -c DE     # pin ALL traffic to a node / best node of a country
+tunnelctl next [-c NL]                # next available node (optionally inside a country)
+tunnelctl auto | rotate               # automatic sticky mode / rotate right now
+tunnelctl policy only NL DE           # rotate ONLY across these countries
+tunnelctl policy except RU            # all countries EXCEPT these   (policy all = reset)
+tunnelctl rotation 6h -s random       # off | daily | daily@5 | 30m | 6h | 1d; best|next|random
+tunnelctl clients                     # active LAN clients (from the xray access log)
+tunnelctl pin 192.168.1.50 node_3     # pin one client to a node
+tunnelctl pin 192.168.1.50 -c PL      # pin one client to a country (sticky + failover inside it)
+tunnelctl next --client 192.168.1.50  # every lane command takes --client
+tunnelctl unpin 192.168.1.50
+tunnelctl country node1 NL            # fix a wrongly detected country
+```
+
+How it fits together:
+
+- **Countries** come from provider remarks (`🇳🇱 Netherlands 1`, `GhostLine 🇫🇮 Finland`):
+  a country *name* beats the flag (`🇷🇺 МОСТ Netherlands` exits in NL), then the flag,
+  then tag/host hints (`ams_1`, `bridge-nl2…`). The updater writes them to
+  `config/nodes_meta.json` (never into `config.json`, so it does not restart xray).
+- **Control file** `config/tunnel_policy.json` is written by tunnelctl and watched by
+  the sticky balancer daemon (applies changes within a second). It has a `global`
+  lane and one lane per pinned client: `mode` auto/manual, `node`, `filter`
+  (`all`/`only`/`except` + countries), `rotation` (schedule + strategy), `failover`.
+- **Manual** pins hold until `auto`; if the node dies the lane fails over inside its
+  rules and returns when the node is back. If no allowed node is alive the lane uses
+  the best alive node anyway and `status` shows a ⚠ policy violation (soft rules).
+- **Per-client pins** = a balancer `client-<ip>` + a `source` rule placed before the
+  catch-all rule (bypass/direct rules still win). `pin`/`unpin` of a *new* client
+  hot-swaps the routing of the running xray (no restart); the updater bakes the
+  pins into `config.json` on its next run, which restarts xray once.
+  `tunnelctl apply --persist` does that immediately; `tunnelctl reconcile` re-applies
+  pins if xray restarted from a config without them (cron-friendly).
+- The daemon dumps node latencies to `data/sticky_state.json`; tunnelctl needs no gRPC.
+
 ## Multi-Server Behavior
 
 When subscription provides multiple proxy servers:
