@@ -21,7 +21,7 @@ TABS = ("Nodes", "Clients", "Rules")
 
 HELP = {
     0: "↵ use  n next  N next-in-country  a auto  r rotate  p pin→client  o set country  "
-       "c view country  A alive-only  s sort  ? help  q quit",
+       "c view country  A alive-only  s sort  g geoprobe  ? help  q quit",
     1: "↵ actions  n next  r rotate  u unpin  e rename  A all-known  ? help  q quit",
     2: "↵ edit lane  a auto  r rotate  ? help  q quit",
 }
@@ -38,6 +38,7 @@ Nodes:    Enter/u  pin ALL traffic (global lane) to the selected node (manual mo
           a        back to automatic sticky selection     r  rotate now
           p        pin a client to the selected node      o  fix the node's country
           c        show only some countries (empty = all)  A  alive only   s  sort
+          g        re-probe every node's real exit country (SRC "exit")
 
 Clients:  Enter    action menu (pin to node / country, own lane, rules, rename, unpin)
           n / r    next node / rotate now for the pinned client   u  unpin   e  rename
@@ -400,7 +401,7 @@ class App:
         tags = self.node_rows()
         self.rows_cache = tags
         allowed = set(self.ctl.candidates_in(s, None, s.policy["global"]))
-        cols = [(1, " "), (10, "TAG"), (2, ""), (3, "CC"), (13, "COUNTRY"), (7, "RTT"), (6, "STATE"),
+        cols = [(1, " "), (10, "TAG"), (2, ""), (3, "CC"), (13, "COUNTRY"), (7, "SRC"), (7, "RTT"), (6, "STATE"),
                 (14, "USED BY"), (0, "NAME / HOST")]
         x = 1
         for wdt, title in cols:
@@ -425,15 +426,16 @@ class App:
             if t not in allowed:
                 col = C["dim"]
             cells = ["▶" if t == act else ("·" if t not in allowed else " "), t, self.flag(s.country(t)),
-                     s.country(t), tl.country_name(s.country(t)), self.ctl.fmt_delay(s.delay(t)),
+                     s.country(t), tl.country_name(s.country(t)), self.ctl.src_label(s, t),
+                     self.ctl.fmt_delay(s.delay(t)),
                      "alive" if alive else ("dead" if alive is False else "n/a"),
                      ",".join(s.lane_users(t)), s.name(t) or s.host(t)]
             if selected:
                 self.put(y, 0, "", base)
                 self.scr.chgat(y, 0, -1, base)
             x = 1
-            for (wdt, _), cell in zip(cols, cells):
-                attr = base | (C["act"] if t == act and wdt in (1, 10) else col if wdt in (7, 6) else 0)
+            for (wdt, title), cell in zip(cols, cells):
+                attr = base | (C["act"] if t == act and wdt in (1, 10) else col if title in ("RTT", "STATE") else 0)
                 self.put(y, x, cell, attr, wdt or None)
                 x += wdt + 1
         if not tags:
@@ -666,6 +668,8 @@ class App:
                 self.sel[0] = 0
         elif ch == "A":
             self.alive_only = not self.alive_only
+        elif ch == "g":
+            self.act(c.act_geoprobe, ok="exit-country probe requested (results in ~1 min)")
         elif ch == "s":
             order = ("order", "delay", "country")
             self.sort = order[(order.index(self.sort) + 1) % len(order)]

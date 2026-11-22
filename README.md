@@ -215,14 +215,21 @@ tunnelctl pin 192.168.1.50 -c PL      # pin one client to a country (sticky + fa
 tunnelctl next --client 192.168.1.50  # every lane command takes --client
 tunnelctl unpin 192.168.1.50
 tunnelctl country node1 NL            # fix a wrongly detected country
+tunnelctl geoprobe                    # re-probe every node's real exit country now
 ```
 
 How it fits together:
 
-- **Countries** come from provider remarks (`🇳🇱 Netherlands 1`, `GhostLine 🇫🇮 Finland`):
-  a country *name* beats the flag (`🇷🇺 МОСТ Netherlands` exits in NL), then the flag,
-  then tag/host hints (`ams_1`, `bridge-nl2…`). The updater writes them to
-  `config/nodes_meta.json` (never into `config.json`, so it does not restart xray).
+- **Countries**: the *exit* country is probed — the balancer daemon starts a temporary,
+  isolated xray (one `127.0.0.1` HTTP inbound per node, the live xray is never touched)
+  and asks Cloudflare `cdn-cgi/trace` (fallback ipinfo.io, ip-api.com) through every
+  alive node. Results live in `data/node_geo.json`, keyed by node endpoint so they
+  survive tag renumbering; refreshed every `GEO_PROBE_INTERVAL_H` (12h), failed nodes
+  retried with backoff, `tunnelctl geoprobe` (TUI: `g`) re-probes now.
+  Priority: `tunnelctl country` override > probed exit > provider remark (a country
+  *name* beats the flag, then tag/host hints like `ams_1`). Remarks go to
+  `config/nodes_meta.json` (never into `config.json`, so they do not restart xray).
+  `SRC` in `nodes` shows the source; `exit≠XX` means the name claims another country.
 - **Control file** `config/tunnel_policy.json` is written by tunnelctl and watched by
   the sticky balancer daemon (applies changes within a second). It has a `global`
   lane and one lane per pinned client: `mode` auto/manual, `node`, `filter`

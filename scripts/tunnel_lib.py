@@ -265,11 +265,20 @@ def strip_meta(outbounds: list[dict]) -> list[dict]:
     return outbounds
 
 
-def node_country(tag: str, meta: dict, policy: dict | None = None) -> str:
+def node_country_src(tag: str, meta: dict, policy: dict | None = None, geo: dict | None = None) -> tuple[str, str]:
+    """(country, source). Priority: manual override > probed exit IP > name/flag/hint."""
     ov = ((policy or {}).get("country_overrides") or {}).get(tag)
     if ov:
-        return str(ov).upper()
-    return ((meta or {}).get("nodes", {}).get(tag) or {}).get("country", "??")
+        return str(ov).upper(), "manual"
+    g = (geo or {}).get(tag) or {}
+    if g.get("country"):
+        return str(g["country"]).upper(), "exit"
+    m = (meta or {}).get("nodes", {}).get(tag) or {}
+    return m.get("country", "??"), m.get("country_src", "unknown")
+
+
+def node_country(tag: str, meta: dict, policy: dict | None = None, geo: dict | None = None) -> str:
+    return node_country_src(tag, meta, policy, geo)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +309,7 @@ def default_policy() -> dict:
         "aliases": {},           # ip -> friendly name (display only)
         "country_overrides": {}, # tag -> ISO
         "rotate_requests": {},   # lane id -> iso timestamp (one-shot "rotate now")
+        "geo_probe_request": None,  # iso timestamp: re-probe exit countries of all nodes now
         "updated_at": None,
     }
 
@@ -335,6 +345,7 @@ def normalize_policy(raw: dict | None) -> dict:
     pol["aliases"] = {str(k): str(v) for k, v in (raw.get("aliases") or {}).items()}
     pol["country_overrides"] = {str(k): str(v).upper() for k, v in (raw.get("country_overrides") or {}).items()}
     pol["rotate_requests"] = dict(raw.get("rotate_requests") or {})
+    pol["geo_probe_request"] = raw.get("geo_probe_request")
     pol["updated_at"] = raw.get("updated_at")
     return pol
 

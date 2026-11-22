@@ -22,6 +22,7 @@ Rules (global, or per client with --client IP)
     tunnelctl policy except RU               Rotate across all countries EXCEPT these
     tunnelctl rotation daily|daily@5|6h|30m|off [-s best|next|random]
     tunnelctl country <tag> <CC|auto>        Fix a node's country if autodetect is wrong
+    tunnelctl geoprobe                       Re-probe every node's real exit country now
 
 Clients
     tunnelctl clients [--since 15m] [--all]  Active LAN clients (from xray access log)
@@ -73,6 +74,7 @@ CONTAINER_CONFIG_DIR = "/etc/xray"
 STATE_FILE = Path("/var/log/xray/sticky_state.json")
 if not STATE_FILE.exists():
     STATE_FILE = REPO / "data" / "sticky_state.json"
+GEO_FILE = STATE_FILE.with_name("node_geo.json")   # exit countries probed by the daemon
 
 ASCII = False  # --ascii: no flag emoji
 
@@ -159,6 +161,8 @@ class Snapshot:
         self.policy = load_policy()
         self.meta = read_json(META_FILE, {"nodes": {}})
         self.state = read_json(STATE_FILE, {})
+        self.geo_cache = read_json(GEO_FILE, {})
+        self.geo = self.geo_cache.get("nodes") or {}
         self.config = read_json(XRAY_CONFIG, {})
         routing = self.config.get("routing", {})
         bal = next((b for b in routing.get("balancers", []) if b.get("tag") == BALANCER_TAG), None)
@@ -184,7 +188,16 @@ class Snapshot:
         return self.order + [t for t in self.extra if t not in self.order]
 
     def country(self, tag: str) -> str:
-        return tl.node_country(tag, self.meta, self.policy)
+        return tl.node_country(tag, self.meta, self.policy, self.geo)
+
+    def country_src(self, tag: str) -> str:
+        return tl.node_country_src(tag, self.meta, self.policy, self.geo)[1]
+
+    def name_country(self, tag: str) -> str:
+        return (self.meta.get("nodes", {}).get(tag) or {}).get("country", "??")
+
+    def exit_ip(self, tag: str) -> str:
+        return (self.geo.get(tag) or {}).get("ip") or ""
 
     def name(self, tag: str) -> str:
         return (self.meta.get("nodes", {}).get(tag) or {}).get("name", "") or ""
@@ -239,6 +252,14 @@ class Snapshot:
         if t.tzinfo is None:  # old daemon: naive container time (UTC)
             t = t.replace(tzinfo=dt.timezone.utc)
         return (dt.datetime.now(dt.timezone.utc) - t).total_seconds()
+
+
+def src_label(snap, tag: str) -> str:
+    src = snap.country_src(tag)
+    if src == "exit":
+        named = snap.name_country(tag)
+        return f"exit≠{named}" if named not in ("??", snap.country(tag)) else "exit"
+    return {"unknown": "?"}.get(src, src)
 
 
 def flag_txt(iso: str) -> str:
@@ -395,6 +416,24 @@ def act_country(tag: str, iso: str) -> None:
     else:
         pol["country_overrides"][tag] = tl.parse_country_list([iso])[0]
     save_policy(pol)
+
+
+def act_geoprobe() -> str:
+    pol = load_policy()
+    req = dt.datetime.now().isoformat(timespec="seconds")
+    pol["geo_probe_request"] = req
+    save_policy(pol)
+    return req
+
+
+def wait_geoprobe(req: str, timeout: float = 180.0) -> dict | None:
+    end = time.time() + timeout
+    while time.time() < end:
+        cache = read_json(GEO_FILE, {})
+        if cache.get("handled_request") == req:
+            return cache
+        time.sleep(1)
+    return None
 
 
 def act_alias(ip: str, name: str) -> None:
@@ -662,7 +701,9 @@ def cmd_nodes(args) -> None:
     elif args.sort == "country":
         tags = sorted(tags, key=lambda t: (snap.country(t), snap.delay(t) or 10 ** 9))
     if args.json:
-        print(json.dumps([{"tag": t, "country": snap.country(t), "name": snap.name(t), "host": snap.host(t),
+        print(json.dumps([{"tag": t, "country": snap.country(t), "country_src": snap.country_src(t),
+                           "name_country": snap.name_country(t), "exit_ip": snap.exit_ip(t),
+                           "name": snap.name(t), "host": snap.host(t),
                            "alive": snap.alive(t), "delay": snap.delay(t), "used_by": snap.lane_users(t)}
                           for t in tags], ensure_ascii=False, indent=2))
         return
@@ -673,12 +714,14 @@ def cmd_nodes(args) -> None:
         state = "alive" if a else ("dead" if a is False else "n/a")
         mark = "▶" if t == snap.active() else ("·" if t not in allowed else " ")
         rows.append([mark, t, flag_txt(snap.country(t)) if not ASCII else "", snap.country(t),
-                     tl.country_name(snap.country(t)), fmt_delay(snap.delay(t)), state,
+                     tl.country_name(snap.country(t)), src_label(snap, t), fmt_delay(snap.delay(t)), state,
                      ",".join(snap.lane_users(t)), snap.name(t) or snap.host(t)])
-    print_table([" ", "TAG", "" if not ASCII else "", "CC", "COUNTRY", "RTT", "STATE", "USED BY", "NAME / HOST"],
-                rows, [1, 10, 2 if not ASCII else 0, 2, 14, 7, 5, 12, 44])
+    print_table([" ", "TAG", "" if not ASCII else "", "CC", "COUNTRY", "SRC", "RTT", "STATE", "USED BY", "NAME / HOST"],
+                rows, [1, 10, 2 if not ASCII else 0, 2, 14, 7, 7, 5, 12, 44])
     alive = sum(1 for t in tags if snap.alive(t))
     print(f"\n{alive}/{len(tags)} alive.  ▶ global active   · excluded by global rules ({describe_filter(snap.policy['global']['filter'])})")
+    print("SRC: exit = probed exit IP, name/flag/hint = from the node name, manual = `tunnelctl country`; "
+          "exit≠XX = the name claims XX")
 
 
 def cmd_status(args) -> None:
@@ -708,6 +751,9 @@ def cmd_status(args) -> None:
     print(f"\nNodes: {alive}/{len(snap.tags)} alive.  Daemon heartbeat: "
           + (f"{int(age)}s ago" if age is not None else "unknown")
           + ("  ⚠ STALE" if age is not None and age > 90 else ""))
+    lr = snap.geo_cache.get("last_run") or {}
+    print(f"Exit-country probe: {snap.state.get('geo_probe', 'n/a')}; {len(snap.geo)}/{len(snap.tags)} nodes known"
+          + (f"; last run {lr.get('at', '?')[:16]} ({lr.get('ok')}/{lr.get('probed')} ok)" if lr else ""))
     if snap.state.get("policy_error"):
         print(f"⚠ daemon policy error: {snap.state['policy_error']}")
     if not snap.statuses:
@@ -795,6 +841,8 @@ def main() -> int:
     p = with_client(sub.add_parser("rotation", help="rotation schedule/strategy"))
     p.add_argument("schedule", nargs="?", help="off | daily | daily@H | 30m | 6h | 1d")
     p.add_argument("-s", "--strategy", choices=tl.SELECT_STRATEGIES)
+    p = sub.add_parser("geoprobe", help="re-probe the exit country of every alive node now")
+    p.add_argument("--no-wait", action="store_true")
     p = sub.add_parser("country", help="override a node's country")
     p.add_argument("tag")
     p.add_argument("iso", help="ISO code or 'auto'")
@@ -866,6 +914,18 @@ def main() -> int:
         elif args.cmd == "rotation":
             lane = act_rotation(args.schedule, args.strategy, args.client)
             print(f"{args.client or 'global'}: rotation {lane['rotation']['schedule']}/{lane['rotation']['strategy']}")
+        elif args.cmd == "geoprobe":
+            req = act_geoprobe()
+            if args.no_wait:
+                print("Exit-country probe requested")
+            else:
+                print("Probing exit countries through every alive node (isolated xray, ~30-60 s)…")
+                cache = wait_geoprobe(req)
+                if cache is None:
+                    raise TunnelError("no answer from the balancer daemon (is it running the new image?)")
+                lr = cache.get("last_run") or {}
+                print(f"done: {lr.get('ok', '?')}/{lr.get('probed', '?')} ok in {lr.get('seconds', '?')}s")
+                cmd_nodes(argparse.Namespace(country=None, alive=False, sort="country", json=False))
         elif args.cmd == "country":
             act_country(args.tag, args.iso)
             print("ok")

@@ -124,6 +124,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.balancer
+      args:
+        XRAY_IMAGE: ${XRAY_IMAGE:-ghcr.io/xtls/xray-core:latest}
     image: xray-smart-balancer:latest
     container_name: xray-smart-balancer
     restart: unless-stopped

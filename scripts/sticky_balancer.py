@@ -37,6 +37,7 @@ import os
 import random
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -48,6 +49,7 @@ GRPC_DIR = SCRIPTS_DIR / "xray_grpc"
 if str(GRPC_DIR) not in sys.path:
     sys.path.insert(0, str(GRPC_DIR))
 
+import geo_probe  # noqa: E402
 import tunnel_lib as tl  # noqa: E402
 
 try:
@@ -73,6 +75,13 @@ HYSTERESIS_RATIO = float(os.getenv("STICKY_HYSTERESIS_RATIO", "0.5"))  # Candida
 MIN_DIFF_MS = int(os.getenv("STICKY_MIN_DIFF_MS", "100"))            # and at least 100ms faster
 STABILITY_TICKS = int(os.getenv("STICKY_STABILITY_TICKS", "3"))       # candidate must hold advantage
 MAX_DEGRADED_RTT_MS = int(os.getenv("STICKY_MAX_DEGRADED_RTT_MS", "2500"))
+
+# Exit-country probing (geo_probe.py): temporary isolated xray, never the live one
+GEO_PROBE_ENABLED = os.getenv("GEO_PROBE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+GEO_PROBE_INTERVAL_H = float(os.getenv("GEO_PROBE_INTERVAL_H", "12"))
+GEO_PROBE_RETRY_MIN = float(os.getenv("GEO_PROBE_RETRY_MIN", "30"))
+GEO_PROBE_CONCURRENCY = int(os.getenv("GEO_PROBE_CONCURRENCY", "6"))
+XRAY_BIN = os.getenv("XRAY_BIN", "/usr/local/bin/xray")
 
 # Control files written by tunnelctl / the updater (./config mounted read-only)
 CONFIG_DIR = Path(os.getenv("STICKY_CONFIG_DIR", "/etc/xray"))
@@ -115,6 +124,7 @@ def resolve_data_dir() -> Path:
 DATA_DIR = resolve_data_dir()
 LOG_FILE = DATA_DIR / "sticky_balancer.log"
 STATE_FILE = DATA_DIR / "sticky_state.json"
+GEO_FILE = DATA_DIR / "node_geo.json"
 
 
 def setup_logger() -> logging.Logger:
@@ -379,6 +389,85 @@ class Lane:
         self.candidate_streak = 0
 
 
+class GeoProber(threading.Thread):
+    """Background exit-country prober.
+
+    Probes nodes that are new, stale (GEO_PROBE_INTERVAL_H) or failed a while
+    ago (backoff from GEO_PROBE_RETRY_MIN); a tunnelctl `geoprobe` request
+    re-probes everything alive. Only nodes the observatory reports alive are
+    probed (dead ones would only burn timeouts).
+    """
+
+    def __init__(self, owner: "StickyBalancer"):
+        super().__init__(daemon=True, name="geo-prober")
+        self.owner = owner
+        self.cache = geo_probe.load_cache(GEO_FILE)
+        self.handled_request = self.cache.get("handled_request")
+        self.wake = threading.Event()
+        self.config_mtime = None
+        self.status = "idle"
+
+    def nodes(self) -> dict:
+        return dict(self.cache.get("nodes") or {})
+
+    def run(self):
+        time.sleep(CHECK_INTERVAL_SEC + 5)  # let the observatory produce a first report
+        while self.owner.running:
+            try:
+                self.cycle()
+            except Exception as e:  # noqa: BLE001 - never kill the daemon over geo
+                self.status = f"error: {e}"
+                logger.warning(f"Geo probe cycle failed: {e}")
+            self.wake.wait(60)
+            self.wake.clear()
+
+    def cycle(self):
+        try:
+            mtime = XRAY_CONFIG_FILE.stat().st_mtime
+            with open(XRAY_CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except Exception as e:
+            self.status = f"no config: {e}"
+            return
+        targets = geo_probe.probe_targets(cfg)
+        if mtime != self.config_mtime:  # tags may have been renumbered
+            self.config_mtime = mtime
+            geo_probe.reindex(self.cache, targets)
+            geo_probe.save_cache(GEO_FILE, self.cache)
+
+        request = self.owner.policy.get("geo_probe_request")
+        forced = bool(request) and request != self.handled_request
+        statuses = self.owner.nodes_snapshot
+        alive = [o for o in targets
+                 if o["tag"] not in statuses
+                 or (statuses[o["tag"]].get("alive") and statuses[o["tag"]].get("delay", 0) > 0)]
+        due = alive if forced else geo_probe.due_for_probe(self.cache, alive, GEO_PROBE_INTERVAL_H,
+                                                            GEO_PROBE_RETRY_MIN)
+        if not due:
+            if forced:
+                self.handled_request = request
+                self.cache["handled_request"] = request
+                geo_probe.save_cache(GEO_FILE, self.cache)
+            self.status = "idle"
+            return
+        self.status = f"probing {len(due)} node(s)"
+        t0 = time.time()
+        results = geo_probe.run_probe(due, XRAY_BIN, GEO_PROBE_CONCURRENCY, log=logger.warning)
+        geo_probe.merge_results(self.cache, targets, results)
+        if forced:
+            self.handled_request = request
+            self.cache["handled_request"] = request
+        self.cache["last_run"] = {"at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                                  "probed": len(results), "ok": sum(1 for r in results.values() if r.get("ok")),
+                                  "seconds": round(time.time() - t0, 1)}
+        geo_probe.save_cache(GEO_FILE, self.cache)
+        ok = [f"{t}={r['country']}" for t, r in sorted(results.items()) if r.get("ok")]
+        bad = [t for t, r in sorted(results.items()) if not r.get("ok")]
+        logger.info(f"Geo probe: {len(ok)}/{len(results)} ok in {time.time() - t0:.0f}s "
+                    f"({', '.join(ok)})" + (f"; failed: {', '.join(bad)}" if bad else ""))
+        self.status = "idle"
+
+
 class StickyBalancer:
     def __init__(self):
         self.running = True
@@ -396,6 +485,7 @@ class StickyBalancer:
 
         self.load_state()
         self.reload_inputs(force=True)
+        self.geo = GeoProber(self) if GEO_PROBE_ENABLED else None
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -451,6 +541,8 @@ class StickyBalancer:
             except Exception:
                 pass
 
+        if policy_changed and getattr(self, "geo", None) and self.policy.get("geo_probe_request"):
+            self.geo.wake.set()
         if policy_changed:
             wanted = {tl.MAIN_LANE} | {tl.lane_id_for_client(ip) for ip in self.policy["clients"]}
             for lid in list(self.lanes):
@@ -472,7 +564,8 @@ class StickyBalancer:
 
     def countries(self) -> dict:
         tags = set(self.meta.get("nodes", {})) | set(self.order) | set(self.nodes_snapshot)
-        return {t: tl.node_country(t, self.meta, self.policy) for t in tags}
+        geo = self.geo.nodes() if self.geo else geo_probe.load_cache(GEO_FILE).get("nodes", {})
+        return {t: tl.node_country(t, self.meta, self.policy, geo) for t in tags}
 
     # -- state file --------------------------------------------------------
     def load_state(self):
@@ -507,6 +600,7 @@ class StickyBalancer:
             "updated_at": datetime.datetime.now().astimezone().isoformat(),
             "check_interval_sec": CHECK_INTERVAL_SEC,
             "policy_error": self.policy_error,
+            "geo_probe": self.geo.status if self.geo else "disabled",
             "lanes": {lid: lane.to_dict() for lid, lane in self.lanes.items()},
             "nodes": self.nodes_snapshot,
         }
@@ -557,6 +651,8 @@ class StickyBalancer:
         )
 
         self.connect_grpc()
+        if self.geo:
+            self.geo.start()
 
         while self.running:
             try:
